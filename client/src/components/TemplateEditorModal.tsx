@@ -34,6 +34,9 @@ import {
   Table,
   Rows,
   Paintbrush,
+  Download,
+  Upload,
+  Copy,
 } from 'lucide-react';
 import { LegalTemplate, FieldDefinition, TemplateCategory, TemplateLanguage } from '../types';
 import { convertToDevanagari } from '../utils/transliterate';
@@ -54,6 +57,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
   const isEditing = !!initialTemplate;
   const bodyTextAreaRef = useRef<HTMLTextAreaElement>(null);
   const richEditorRef = useRef<HTMLDivElement>(null);
+  const editorFileInputRef = useRef<HTMLInputElement>(null);
 
   const [activeTab, setActiveTab] = useState<'basic' | 'body' | 'fields'>('basic');
   const [editorMode, setEditorMode] = useState<'visual' | 'code'>('visual');
@@ -78,13 +82,174 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
   const [statutoryRequirements, setStatutoryRequirements] = useState<string[]>(
     initialTemplate?.statutoryRequirements || []
   );
-  const [newStatRequirement, setNewStatRequirement] = useState('');
+
   const [fields, setFields] = useState<FieldDefinition[]>(initialTemplate?.fields || []);
+
+  const handleDuplicateField = (idx: number) => {
+    const target = fields[idx];
+    if (!target) return;
+
+    let baseKey = target.key || `field_${idx}`;
+    let newKey = `${baseKey}_copy`;
+    let counter = 2;
+    while (fields.some((f) => f.key === newKey)) {
+      newKey = `${baseKey}_copy${counter}`;
+      counter++;
+    }
+
+    const duplicatedField: FieldDefinition = {
+      ...JSON.parse(JSON.stringify(target)),
+      key: newKey,
+      label: target.label ? `${target.label} (Copy)` : 'Field Copy',
+      labelMr: target.labelMr ? `${target.labelMr} (प्रत)` : '',
+    };
+
+    const updatedFields = [...fields];
+    updatedFields.splice(idx + 1, 0, duplicatedField);
+    setFields(updatedFields);
+  };
+
+  const handleExportJSON = () => {
+    const templateToExport: LegalTemplate = {
+      id: id.trim() || 'custom-template',
+      title: title.trim() || 'Untitled Template',
+      titleMr: titleMr.trim() || undefined,
+      category,
+      language,
+      description: description.trim(),
+      descriptionMr: descriptionMr.trim() || undefined,
+      courtApplicable,
+      defaultCourt: defaultCourt.trim() || undefined,
+      fields,
+      standardClauses: initialTemplate?.standardClauses || [],
+      templateText,
+      statutoryRequirements,
+      isBuiltIn: false,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const jsonStr = JSON.stringify(templateToExport, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${templateToExport.id || 'template'}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const parsed = JSON.parse(content) as Partial<LegalTemplate>;
+
+        if (!parsed.title && !parsed.fields && !parsed.templateText) {
+          throw new Error('Invalid template JSON file format.');
+        }
+
+        if (parsed.id) setId(parsed.id);
+        if (parsed.title) setTitle(parsed.title);
+        if (parsed.titleMr !== undefined) setTitleMr(parsed.titleMr || '');
+        if (parsed.category) setCategory(parsed.category);
+        if (parsed.language) setLanguage(parsed.language);
+        if (parsed.description !== undefined) setDescription(parsed.description || '');
+        if (parsed.descriptionMr !== undefined) setDescriptionMr(parsed.descriptionMr || '');
+        if (parsed.courtApplicable !== undefined) setCourtApplicable(!!parsed.courtApplicable);
+        if (parsed.defaultCourt !== undefined) setDefaultCourt(parsed.defaultCourt || '');
+        if (parsed.templateText !== undefined) setTemplateText(parsed.templateText || '');
+        if (Array.isArray(parsed.statutoryRequirements)) setStatutoryRequirements(parsed.statutoryRequirements);
+
+        // AUTOMATICALLY CREATE FORM INPUT FIELDS
+        if (Array.isArray(parsed.fields)) {
+          setFields(parsed.fields);
+        }
+
+        setError(null);
+        alert(`Successfully imported template "${parsed.title || file.name}" with ${parsed.fields?.length || 0} form input fields!`);
+      } catch (err: any) {
+        console.error('Import JSON error:', err);
+        alert(`Failed to import template JSON: ${err.message}`);
+      } finally {
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const [newStatRequirement, setNewStatRequirement] = useState('');
   const [customSections, setCustomSections] = useState<string[]>([]);
   const [isSectionManagerOpen, setIsSectionManagerOpen] = useState(false);
   const [newSectionInput, setNewSectionInput] = useState('');
   const [editingSectionName, setEditingSectionName] = useState<{ oldName: string; newName: string } | null>(null);
   const [rawOptionsTextMap, setRawOptionsTextMap] = useState<Record<string | number, string>>({});
+
+  // Dynamically calculate natural page break positions incorporating 1" bottom margin and 1" top margin (192px gap)
+  const [naturalPageBreaks, setNaturalPageBreaks] = useState<{ y: number; pageNum: number }[]>([]);
+
+  useEffect(() => {
+    const computeNaturalBreaks = () => {
+      const editorEl = richEditorRef.current;
+      if (!editorEl) return;
+
+      const printableHeight = 930; // A4 template editor standard printable height
+      const totalPaperHeight = 1122;
+      const topPadding = 96; // 1.0" top margin of Page 1
+      const pageMarginGap = 192; // 1.0" bottom margin + 1.0" top margin = 2.0" (192px)
+
+      const manualBreaks = Array.from(
+        editorEl.querySelectorAll<HTMLElement>('.page-break, hr.page-break, div.page-break')
+      );
+
+      const positions: { y: number; pageNum: number }[] = [];
+      let currentPageCounter = 1;
+
+      if (manualBreaks.length === 0) {
+        const contentHeight = editorEl.scrollHeight;
+        let y = topPadding + printableHeight;
+        while (y < contentHeight) {
+          currentPageCounter++;
+          positions.push({ y, pageNum: currentPageCounter });
+          y += totalPaperHeight;
+        }
+      } else {
+        // Section 0: before 1st manual page break
+        const firstBreakTop = manualBreaks[0].offsetTop;
+        let y0 = topPadding + printableHeight;
+        while (y0 < firstBreakTop) {
+          currentPageCounter++;
+          positions.push({ y: y0, pageNum: currentPageCounter });
+          y0 += totalPaperHeight;
+        }
+
+        // Sections after manual page breaks — accounts for 1" bottom margin + 1" top margin (192px gap)
+        manualBreaks.forEach((mb, idx) => {
+          currentPageCounter++; // Each manual page break forces a new printed page
+          const newPageContentStart = mb.offsetTop + pageMarginGap;
+          const nextBreakTop = idx < manualBreaks.length - 1 ? manualBreaks[idx + 1].offsetTop : editorEl.scrollHeight;
+
+          let ySec = newPageContentStart + printableHeight;
+          while (ySec < nextBreakTop) {
+            currentPageCounter++;
+            positions.push({ y: ySec, pageNum: currentPageCounter });
+            ySec += totalPaperHeight;
+          }
+        });
+      }
+
+      setNaturalPageBreaks(positions);
+    };
+
+    computeNaturalBreaks();
+    const timer = setTimeout(computeNaturalBreaks, 150);
+    return () => clearTimeout(timer);
+  }, [templateText, editorMode, activeTab]);
 
   // Compute all available sections (standard + custom) for dropdowns
   const availableSections = useMemo(() => {
@@ -294,6 +459,19 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     lineHeight?: string;
     alignment?: string;
   } | null>(null);
+  const [isFormatSticky, setIsFormatSticky] = useState<boolean>(false);
+
+  // Pressing Escape cancels Format Painter mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && copiedFormat) {
+        setCopiedFormat(null);
+        setIsFormatSticky(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [copiedFormat]);
 
   // Apply formatting to selection (supports visual contentEditable execCommand & code view textarea fallback)
   const handleExecCommand = (command: string, value: string = '', prefix: string = '', suffix: string = '') => {
@@ -378,13 +556,25 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
       } else if (command === 'lineSpacing') {
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
-          const block = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
-          if (block) {
-            (block as HTMLElement).style.lineHeight = value;
+          const container = richEditorRef.current;
+          const range = sel.getRangeAt(0);
+          const blocks = container
+            ? Array.from(container.querySelectorAll('p, div, h1, h2, h3, blockquote, li, td, th'))
+            : [];
+          const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
+          if (selectedBlocks.length > 0) {
+            selectedBlocks.forEach((b) => {
+              (b as HTMLElement).style.lineHeight = value;
+            });
           } else {
-            document.execCommand('formatBlock', false, 'p');
-            const newBlock = sel.anchorNode?.parentElement?.closest('p, div');
-            if (newBlock) (newBlock as HTMLElement).style.lineHeight = value;
+            const block = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
+            if (block) {
+              (block as HTMLElement).style.lineHeight = value;
+            } else {
+              document.execCommand('formatBlock', false, 'p');
+              const newBlock = sel.anchorNode?.parentElement?.closest('p, div');
+              if (newBlock) (newBlock as HTMLElement).style.lineHeight = value;
+            }
           }
         }
       } else if (command === 'insertTable') {
@@ -410,10 +600,14 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
               lineHeight: comp.lineHeight || undefined,
               alignment: comp.textAlign || undefined,
             });
+            setIsFormatSticky(value === 'sticky');
           }
         }
       } else if (command === 'applyFormat') {
         if (copiedFormat) {
+          const sel = window.getSelection();
+          const container = richEditorRef.current;
+
           if (copiedFormat.bold !== undefined && document.queryCommandState('bold') !== copiedFormat.bold) {
             document.execCommand('bold');
           }
@@ -426,16 +620,34 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
           if (copiedFormat.fontSize) {
             const pt = parseFloat(copiedFormat.fontSize);
             if (!isNaN(pt)) {
-              const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
-              if (target) (target as HTMLElement).style.fontSize = `${pt}pt`;
+              if (sel && sel.rangeCount > 0 && !sel.isCollapsed && container) {
+                const range = sel.getRangeAt(0);
+                const blocks = Array.from(container.querySelectorAll('p, div, span, h1, h2, h3, td, th'));
+                const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
+                if (selectedBlocks.length > 0) {
+                  selectedBlocks.forEach((b) => ((b as HTMLElement).style.fontSize = `${pt}pt`));
+                } else {
+                  const target = sel.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
+                  if (target) (target as HTMLElement).style.fontSize = `${pt}pt`;
+                }
+              }
             }
           }
           if (copiedFormat.fontFamily) {
             document.execCommand('fontName', false, copiedFormat.fontFamily);
           }
           if (copiedFormat.lineHeight) {
-            const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
-            if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+            if (sel && sel.rangeCount > 0 && container) {
+              const range = sel.getRangeAt(0);
+              const blocks = Array.from(container.querySelectorAll('p, div, h1, h2, h3, blockquote, li, td, th'));
+              const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
+              if (selectedBlocks.length > 0) {
+                selectedBlocks.forEach((b) => ((b as HTMLElement).style.lineHeight = copiedFormat.lineHeight!));
+              } else {
+                const target = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
+                if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+              }
+            }
           }
           if (copiedFormat.alignment) {
             if (copiedFormat.alignment === 'center') document.execCommand('justifyCenter');
@@ -443,7 +655,10 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
             else if (copiedFormat.alignment === 'left') document.execCommand('justifyLeft');
             else if (copiedFormat.alignment === 'justify') document.execCommand('justifyFull');
           }
-          setCopiedFormat(null);
+          if (!isFormatSticky) {
+            setCopiedFormat(null);
+            setIsFormatSticky(false);
+          }
         }
       }
       setTemplateText(richEditorRef.current.innerHTML);
@@ -637,42 +852,68 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
   };
 
   return (
-    <div className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-sm transition-all overflow-hidden ${isMaximized ? 'p-0' : 'p-4'}`}>
-      <div className={`bg-slate-900 border border-slate-800 flex flex-col shadow-2xl overflow-hidden transition-all ${
+    <div className={`fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all overflow-hidden ${isMaximized ? 'p-0' : 'p-4'}`}>
+      <div className={`bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col shadow-2xl overflow-hidden transition-all text-slate-900 dark:text-white ${
         isMaximized
           ? 'w-screen h-screen max-w-none max-h-none rounded-none border-none'
-          : 'w-full max-w-6xl max-h-[92vh] rounded-2xl'
+          : 'w-full max-w-6xl h-[90vh] rounded-2xl'
       }`}>
         {/* Header */}
-        <div className="px-6 py-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
+        <div className="px-6 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/50 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-600/20 text-indigo-400 rounded-xl border border-indigo-500/20">
+            <div className="p-2 bg-indigo-50 dark:bg-indigo-600/20 text-indigo-600 dark:text-indigo-400 rounded-xl border border-indigo-200 dark:border-indigo-500/20">
               <FileText className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white tracking-tight flex items-center gap-2">
                 {isEditing ? `Edit Template: ${initialTemplate.title}` : 'Create New Legal Template'}
                 {isMaximized && (
-                  <span className="text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-700/60 font-normal">
+                  <span className="text-[10px] bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-700/60 font-normal">
                     Full Window View
                   </span>
                 )}
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 {isEditing ? 'Modify template text, statutory rules, and form fields' : 'Design custom legal draft, automated fields, and statutory rules'}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5">
+            <input
+              type="file"
+              ref={editorFileInputRef}
+              accept=".json"
+              onChange={handleImportJSON}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => editorFileInputRef.current?.click()}
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Import Template JSON (Automatically creates Form Input Fields)"
+            >
+              <Upload className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+              Import JSON
+            </button>
+            <button
+              type="button"
+              onClick={handleExportJSON}
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Export Template JSON file"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              Export JSON
+            </button>
+
             {/* Maximize / Restore Toggle */}
             <button
               type="button"
               onClick={() => setIsMaximized((prev) => !prev)}
-              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition"
+              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition"
               title={isMaximized ? 'Restore Normal Window' : 'Maximize Full Window'}
             >
-              {isMaximized ? <Minimize2 className="w-4 h-4 text-indigo-400" /> : <Maximize2 className="w-4 h-4" />}
+              {isMaximized ? <Minimize2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> : <Maximize2 className="w-4 h-4" />}
             </button>
 
             {/* Pop-out / Full Screen Editor */}
@@ -682,7 +923,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                 setIsMaximized(true);
                 setActiveTab('body');
               }}
-              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition"
+              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition"
               title="Expand Pop-out Editor (Full Window)"
             >
               <ExternalLink className="w-4 h-4" />
@@ -692,7 +933,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition"
+              className="p-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition"
             >
               <X className="w-5 h-5" />
             </button>
@@ -700,13 +941,13 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
         </div>
 
         {/* Tab Navigation */}
-        <div className="px-6 border-b border-slate-800 bg-slate-950/40 flex gap-4 text-xs font-semibold">
+        <div className="px-6 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 flex gap-4 text-xs font-semibold shrink-0">
           <button
             onClick={() => setActiveTab('basic')}
             className={`py-3 border-b-2 flex items-center gap-2 transition ${
               activeTab === 'basic'
-                ? 'border-indigo-500 text-indigo-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-indigo-600 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
             <Settings className="w-4 h-4" />
@@ -716,8 +957,8 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
             onClick={() => setActiveTab('body')}
             className={`py-3 border-b-2 flex items-center gap-2 transition ${
               activeTab === 'body'
-                ? 'border-indigo-500 text-indigo-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-indigo-600 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
             <Code className="w-4 h-4" />
@@ -727,8 +968,8 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
             onClick={() => setActiveTab('fields')}
             className={`py-3 border-b-2 flex items-center gap-2 transition ${
               activeTab === 'fields'
-                ? 'border-indigo-500 text-indigo-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-indigo-600 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
             }`}
           >
             <Layers className="w-4 h-4" />
@@ -738,21 +979,21 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
         {/* Form Error Banner */}
         {error && (
-          <div className="mx-6 mt-4 p-3 bg-red-950/50 border border-red-800 text-red-300 rounded-xl text-xs flex items-center gap-2">
+          <div className="mx-6 mt-4 p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-xl text-xs flex items-center gap-2 shrink-0">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
         {/* Modal Body / Tab Contents */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-6">
+        <div className={`p-6 flex-1 min-h-0 ${activeTab === 'body' ? 'flex flex-col overflow-hidden space-y-3' : 'overflow-y-auto space-y-6'}`}>
           {/* TAB 1: BASIC METADATA */}
           {activeTab === 'basic' && (
             <div className="space-y-5 text-xs">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">
-                    Template Identifier ID <span className="text-red-400">*</span>
+                  <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
+                    Template Identifier ID <span className="text-red-500 dark:text-red-400">*</span>
                   </label>
                   <input
                     type="text"
@@ -760,19 +1001,19 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     value={id}
                     onChange={(e) => setId(e.target.value)}
                     placeholder="e.g. rent-agreement-mr or bail-application-mr"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500 disabled:opacity-50 font-mono text-xs"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 font-mono text-xs placeholder-slate-400 dark:placeholder-slate-500"
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">Unique slug. Lowercase letters, numbers, and hyphens.</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Unique slug. Lowercase letters, numbers, and hyphens.</p>
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">
-                    Category <span className="text-red-400">*</span>
+                  <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
+                    Category <span className="text-red-500 dark:text-red-400">*</span>
                   </label>
                   <select
                     value={category}
                     onChange={(e) => setCategory(e.target.value as TemplateCategory)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     <option value="family">Family Court (कौटुंबिक/विवाह)</option>
                     <option value="commercial">Commercial / Agreements (कराराचे कागदपत्र)</option>
@@ -785,26 +1026,26 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">
-                    Title (English) <span className="text-red-400">*</span>
+                  <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
+                    Title (English) <span className="text-red-500 dark:text-red-400">*</span>
                   </label>
                   <input
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="e.g. Leave and License Agreement"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
 
                 <div>
                   <div className="flex items-center justify-between mb-1">
-                    <label className="block text-slate-300 font-medium">Title (Marathi / देवनागरी)</label>
+                    <label className="block text-slate-700 dark:text-slate-300 font-medium">Title (Marathi / देवनागरी)</label>
                     <button
                       type="button"
                       onClick={() => handleTransliterateProp(null, 'titleMr', titleMr || title, (res) => setTitleMr(res))}
                       disabled={transliteratingKey === 'titleMr' || (!titleMr && !title)}
-                      className="text-[10px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
+                      className="text-[10px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
                       title="Convert English Title to Marathi Devanagari"
                     >
                       {transliteratingKey === 'titleMr' ? '...' : 'म'}
@@ -815,18 +1056,18 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     value={titleMr}
                     onChange={(e) => setTitleMr(e.target.value)}
                     placeholder="उदा. भाडेकरार / रजा व परवाना करार"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500 font-marathi"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Language</label>
+                  <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">Language</label>
                   <select
                     value={language}
                     onChange={(e) => setLanguage(e.target.value as TemplateLanguage)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     <option value="mr">Marathi (मराठी)</option>
                     <option value="en">English</option>
@@ -840,9 +1081,9 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     id="courtApplicable"
                     checked={courtApplicable}
                     onChange={(e) => setCourtApplicable(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500"
+                    className="w-4 h-4 rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-indigo-600 focus:ring-indigo-500"
                   />
-                  <label htmlFor="courtApplicable" className="text-slate-300 font-medium cursor-pointer">
+                  <label htmlFor="courtApplicable" className="text-slate-700 dark:text-slate-300 font-medium cursor-pointer">
                     Requires Court Header (न्यायालयीन अर्ज आहे)
                   </label>
                 </div>
@@ -850,36 +1091,36 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
               {courtApplicable && (
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Default Court Designation</label>
+                  <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">Default Court Designation</label>
                   <input
                     type="text"
                     value={defaultCourt}
                     onChange={(e) => setDefaultCourt(e.target.value)}
                     placeholder="उदा. मे. दिवाणी न्यायाधीश वरिष्ठ स्तर, अमळनेर"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
               )}
 
               <div>
-                <label className="block text-slate-300 font-medium mb-1">Description (English)</label>
+                <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">Description (English)</label>
                 <textarea
                   rows={2}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Short explanation of when to use this template"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-slate-300 font-medium">Description (Marathi)</label>
+                  <label className="block text-slate-700 dark:text-slate-300 font-medium">Description (Marathi)</label>
                   <button
                     type="button"
                     onClick={() => handleTransliterateProp(null, 'descriptionMr', descriptionMr || description, (res) => setDescriptionMr(res))}
                     disabled={transliteratingKey === 'descriptionMr' || (!descriptionMr && !description)}
-                    className="text-[10px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
+                    className="text-[10px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
                     title="Convert Description to Marathi Devanagari"
                   >
                     {transliteratingKey === 'descriptionMr' ? '...' : 'म'}
@@ -890,23 +1131,23 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                   value={descriptionMr}
                   onChange={(e) => setDescriptionMr(e.target.value)}
                   placeholder="सदर टेम्पलेट वापरण्याबाबत सविस्तर माहिती..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-indigo-500 font-marathi"
+                  className="w-full bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                 />
               </div>
 
               {/* Statutory Requirements Audit Checklist */}
-              <div className="border border-slate-800 rounded-xl p-4 bg-slate-950/40">
-                <label className="block text-slate-300 font-semibold mb-2">
+              <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 bg-slate-50 dark:bg-slate-950/40">
+                <label className="block text-slate-800 dark:text-slate-300 font-semibold mb-2">
                   Statutory & Compliance Rules Checklist (AI Legal Audit)
                 </label>
                 <div className="space-y-2 mb-3">
                   {statutoryRequirements.map((req, index) => (
-                    <div key={index} className="flex items-center justify-between bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800">
-                      <span className="text-slate-300 text-xs">✓ {req}</span>
+                    <div key={index} className="flex items-center justify-between bg-white dark:bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800">
+                      <span className="text-slate-800 dark:text-slate-300 text-xs">✓ {req}</span>
                       <button
                         type="button"
                         onClick={() => handleRemoveStatRequirement(index)}
-                        className="text-slate-500 hover:text-red-400 p-1"
+                        className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -925,12 +1166,12 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       }
                     }}
                     placeholder="Add mandatory statutory rule (e.g. Minimum 1 year separation required)..."
-                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500"
+                    className="flex-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                   <button
                     type="button"
                     onClick={handleAddStatRequirement}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium flex items-center gap-1"
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-white rounded-lg text-xs font-medium flex items-center gap-1"
                   >
                     <Plus className="w-3.5 h-3.5" /> Add Rule
                   </button>
@@ -944,19 +1185,19 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
             <div className="flex-1 flex flex-col space-y-3 text-xs min-h-0">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-white flex items-center gap-2">
+                  <h3 className="font-semibold text-slate-900 dark:text-white flex items-center gap-2">
                     Legal Document Body Text Editor
                     {editorMode === 'visual' ? (
-                      <span className="text-[10px] bg-emerald-950 text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-700/60 font-semibold flex items-center gap-1">
+                      <span className="text-[10px] bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-700/60 font-semibold flex items-center gap-1">
                         <Eye className="w-3 h-3" /> Rich Text Visual Mode
                       </span>
                     ) : (
-                      <span className="text-[10px] bg-amber-950 text-amber-300 px-2 py-0.5 rounded-full border border-amber-700/60 font-semibold flex items-center gap-1">
+                      <span className="text-[10px] bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 px-2 py-0.5 rounded-full border border-amber-200 dark:border-amber-700/60 font-semibold flex items-center gap-1">
                         <Code className="w-3 h-3" /> Code View (Tags Mode)
                       </span>
                     )}
                   </h3>
-                  <p className="text-slate-400 text-[11px]">
+                  <p className="text-slate-500 dark:text-slate-400 text-[11px]">
                     {editorMode === 'visual'
                       ? 'Format text visually without raw HTML tags. Text alignment and styling display live as formatted.'
                       : 'Edit raw template code and HTML tags directly.'}
@@ -965,7 +1206,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
                 <div className="flex items-center gap-2">
                   {/* Mode Switcher */}
-                  <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800">
+                  <div className="flex items-center bg-slate-100 dark:bg-slate-950 p-1 rounded-lg border border-slate-200 dark:border-slate-800">
                     <button
                       type="button"
                       onClick={() => {
@@ -977,7 +1218,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       className={`px-2.5 py-1 text-xs font-semibold rounded-md transition flex items-center gap-1.5 ${
                         editorMode === 'visual'
                           ? 'bg-indigo-600 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                       }`}
                     >
                       <Eye className="w-3.5 h-3.5" />
@@ -994,7 +1235,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       className={`px-2.5 py-1 text-xs font-semibold rounded-md transition flex items-center gap-1.5 ${
                         editorMode === 'code'
                           ? 'bg-indigo-600 text-white shadow-sm'
-                          : 'text-slate-400 hover:text-slate-200'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                       }`}
                     >
                       <Code className="w-3.5 h-3.5" />
@@ -1005,22 +1246,22 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsSidebarOpen((prev) => !prev)}
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition"
+                    className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition"
                   >
-                    <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                    <Layers className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                     {isSidebarOpen ? 'Hide Sidebar' : 'Show Sidebar'}
                   </button>
                 </div>
               </div>
 
               {/* Split View Container */}
-              <div className="flex-1 flex gap-3 min-h-[460px]">
+              <div className="flex-1 flex gap-3 min-h-0 h-full overflow-hidden">
                 {/* Main Text Editor + MS Word Ribbon Toolbar */}
-                <div className="flex-1 flex flex-col min-w-0">
+                <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full">
                   {/* Format Ribbon Toolbar */}
-                  <div className="bg-slate-900 border border-slate-800 rounded-t-xl p-2 flex flex-wrap items-center gap-1.5 z-10 relative">
+                  <div className="bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-t-xl p-2 flex flex-wrap items-center gap-1.5 z-10 relative shrink-0">
                     {/* Style / Heading Selector */}
-                    <div className="pr-2 border-r border-slate-800">
+                    <div className="pr-2 border-r border-slate-300 dark:border-slate-800">
                       <select
                         onChange={(e) => {
                           if (e.target.value) {
@@ -1028,7 +1269,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             e.target.value = '';
                           }
                         }}
-                        className="bg-slate-950 border border-slate-800 text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
+                        className="bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-800 dark:text-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 cursor-pointer"
                         defaultValue=""
                       >
                         <option value="" disabled>Text Style / Heading</option>
@@ -1040,11 +1281,11 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     </div>
 
                     {/* Font & Style Controls */}
-                    <div className="flex items-center gap-1 px-2 border-r border-slate-800 flex-wrap">
+                    <div className="flex items-center gap-1 px-2 border-r border-slate-300 dark:border-slate-800 flex-wrap">
                       {/* Block Style */}
                       <select
                         onChange={(e) => handleExecCommand('formatBlock', e.target.value)}
-                        className="bg-slate-900 text-slate-200 text-[11px] rounded border border-slate-700 px-1.5 py-1 focus:outline-none focus:border-indigo-500"
+                        className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-[11px] rounded border border-slate-300 dark:border-slate-700 px-1.5 py-1 focus:outline-none focus:border-indigo-500"
                         title="Style / Heading"
                         defaultValue="p"
                       >
@@ -1057,7 +1298,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       {/* Font Family */}
                       <select
                         onChange={(e) => handleExecCommand('fontName', e.target.value)}
-                        className="bg-slate-900 text-slate-200 text-[11px] rounded border border-slate-700 px-1.5 py-1 focus:outline-none focus:border-indigo-500 max-w-[105px]"
+                        className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 text-[11px] rounded border border-slate-300 dark:border-slate-700 px-1.5 py-1 focus:outline-none focus:border-indigo-500 max-w-[105px]"
                         title="Font Family"
                         defaultValue="Mangal"
                       >
@@ -1070,8 +1311,8 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       </select>
 
                       {/* Manual Font Size Input in pt */}
-                      <div className="flex items-center gap-1 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5" title="Type exact Font Size in pt (e.g. 12, 14, 18)">
-                        <span className="text-[10px] text-slate-400 font-mono">Size:</span>
+                      <div className="flex items-center gap-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5" title="Type exact Font Size in pt (e.g. 12, 14, 18)">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Size:</span>
                         <input
                           type="number"
                           min="6"
@@ -1085,9 +1326,9 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             }
                           }}
                           onBlur={(e) => handleExecCommand('fontSizePt', e.target.value)}
-                          className="w-10 bg-transparent text-slate-200 text-xs font-semibold focus:outline-none text-center"
+                          className="w-10 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
                         />
-                        <span className="text-[10px] text-slate-400 font-mono">pt</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">pt</span>
                         <select
                           onChange={(e) => {
                             if (e.target.value) {
@@ -1096,7 +1337,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                               handleExecCommand('fontSizePt', e.target.value);
                             }
                           }}
-                          className="bg-transparent text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-700 pl-1"
+                          className="bg-transparent text-slate-600 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-1"
                           defaultValue=""
                         >
                           <option value="" disabled>▾</option>
@@ -1115,7 +1356,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('increaseFontSize')}
-                        className="px-1.5 py-0.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded transition"
+                        className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-200 hover:bg-slate-300 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded transition"
                         title="Increase Font Size +1pt (A+)"
                       >
                         A+
@@ -1123,7 +1364,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('decreaseFontSize')}
-                        className="px-1.5 py-0.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded transition"
+                        className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-200 hover:bg-slate-300 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded transition"
                         title="Decrease Font Size -1pt (A-)"
                       >
                         A-
@@ -1131,11 +1372,11 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     </div>
 
                     {/* Text Formatting */}
-                    <div className="flex items-center gap-0.5 px-2 border-r border-slate-800">
+                    <div className="flex items-center gap-0.5 px-2 border-r border-slate-300 dark:border-slate-800">
                       <button
                         type="button"
                         onClick={() => handleExecCommand('bold', '', '<b>', '</b>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition font-bold"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition font-bold"
                         title="Bold"
                       >
                         <Bold className="w-4 h-4" />
@@ -1143,7 +1384,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('italic', '', '<i>', '</i>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition italic"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition italic"
                         title="Italic"
                       >
                         <Italic className="w-4 h-4" />
@@ -1151,29 +1392,59 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('underline', '', '<u>', '</u>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition underline"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition underline"
                         title="Underline"
                       >
                         <Underline className="w-4 h-4" />
                       </button>
-                      {/* Format Painter (🎨) */}
+                      {/* Format Painter */}
                       <button
                         type="button"
-                        onClick={() => handleExecCommand(copiedFormat ? 'applyFormat' : 'copyFormat')}
-                        className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition cursor-pointer ${
+                        onClick={() => {
+                          if (copiedFormat) {
+                            const selStr = window.getSelection()?.toString().trim();
+                            if (selStr && selStr.length > 0) {
+                              handleExecCommand('applyFormat');
+                            } else {
+                              setCopiedFormat(null);
+                              setIsFormatSticky(false);
+                            }
+                          } else {
+                            handleExecCommand('copyFormat', 'single');
+                          }
+                        }}
+                        onDoubleClick={(e) => {
+                          e.preventDefault();
+                          handleExecCommand('copyFormat', 'sticky');
+                        }}
+                        className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition cursor-pointer select-none ${
                           copiedFormat
-                            ? 'bg-amber-500 text-black font-bold ring-2 ring-amber-300 animate-pulse'
-                            : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-700'
+                            ? isFormatSticky
+                              ? 'bg-amber-400 text-black font-extrabold ring-2 ring-amber-200 shadow-md'
+                              : 'bg-amber-500 text-black font-bold ring-2 ring-amber-300 animate-pulse'
+                            : 'bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white border border-slate-300 dark:border-slate-700'
                         }`}
-                        title={copiedFormat ? "Click to Apply Copied Formatting to Selected Text" : "Format Painter: Copy Formatting of Current Selection"}
+                        title={
+                          copiedFormat
+                            ? isFormatSticky
+                              ? 'Sticky Format Painter Active! Select text anywhere to format continuously. Click or press Esc to exit.'
+                              : 'Click to Apply Format. Double-click Format Painter button to lock sticky for multiple applies.'
+                            : 'Format Painter: Single click to copy & apply once. Double-click to lock sticky for multiple applies.'
+                        }
                       >
-                        <Paintbrush className="w-3.5 h-3.5 text-amber-400" />
-                        <span>{copiedFormat ? 'Apply Format' : 'Format Painter'}</span>
+                        <Paintbrush className={`w-3.5 h-3.5 ${copiedFormat ? 'text-slate-950 font-bold' : 'text-amber-500 dark:text-amber-400'}`} />
+                        <span>
+                          {copiedFormat
+                            ? isFormatSticky
+                              ? 'Sticky Painter 📌'
+                              : 'Apply Format'
+                            : 'Format Painter'}
+                        </span>
                       </button>
                       <button
                         type="button"
                         onClick={() => handleExecCommand('strikethrough', '', '~~', '~~')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Strikethrough"
                       >
                         <Strikethrough className="w-4 h-4" />
@@ -1181,11 +1452,11 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     </div>
 
                     {/* Alignment */}
-                    <div className="flex items-center gap-0.5 px-2 border-r border-slate-800">
+                    <div className="flex items-center gap-0.5 px-2 border-r border-slate-300 dark:border-slate-800">
                       <button
                         type="button"
                         onClick={() => handleExecCommand('align', 'left', '<p align="left">', '</p>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Align Left"
                       >
                         <AlignLeft className="w-4 h-4" />
@@ -1193,7 +1464,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('align', 'center', '<center>', '</center>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Align Center"
                       >
                         <AlignCenter className="w-4 h-4" />
@@ -1201,7 +1472,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('align', 'right', '<p align="right">', '</p>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Align Right"
                       >
                         <AlignRight className="w-4 h-4" />
@@ -1209,7 +1480,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('align', 'justify', '<p align="justify">', '</p>')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Align Justify"
                       >
                         <AlignJustify className="w-4 h-4" />
@@ -1217,11 +1488,11 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     </div>
 
                     {/* Structure & Lists */}
-                    <div className="flex items-center gap-0.5 px-2 border-r border-slate-800">
+                    <div className="flex items-center gap-0.5 px-2 border-r border-slate-300 dark:border-slate-800">
                       <button
                         type="button"
                         onClick={() => handleExecCommand('bullet', '', '- ')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Bullet List"
                       >
                         <List className="w-4 h-4" />
@@ -1229,7 +1500,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('numbered', '', '१. ')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Numbered List"
                       >
                         <ListOrdered className="w-4 h-4" />
@@ -1237,14 +1508,14 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('quote', '', '> ')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Blockquote"
                       >
                         <Quote className="w-4 h-4" />
                       </button>
                       {/* Manual Line Spacing Input */}
-                      <div className="flex items-center gap-1 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5" title="Type exact Line Spacing (e.g. 1.0, 1.2, 1.5, 1.6, 2.0)">
-                        <span className="text-[10px] text-slate-400 font-mono">Line:</span>
+                      <div className="flex items-center gap-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5" title="Type exact Line Spacing (e.g. 1.0, 1.2, 1.5, 1.6, 2.0)">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Line:</span>
                         <input
                           type="number"
                           min="0.5"
@@ -1258,9 +1529,9 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             }
                           }}
                           onBlur={(e) => handleExecCommand('lineSpacing', e.target.value)}
-                          className="w-10 bg-transparent text-slate-200 text-xs font-semibold focus:outline-none text-center"
+                          className="w-10 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
                         />
-                        <span className="text-[10px] text-slate-400 font-mono">x</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">x</span>
                         <select
                           onChange={(e) => {
                             if (e.target.value) {
@@ -1269,7 +1540,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                               handleExecCommand('lineSpacing', e.target.value);
                             }
                           }}
-                          className="bg-transparent text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-700 pl-1"
+                          className="bg-transparent text-slate-600 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-1"
                           defaultValue=""
                         >
                           <option value="" disabled>▾</option>
@@ -1285,7 +1556,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('outdent')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Decrease Indent / Outdent Left"
                       >
                         <Outdent className="w-4 h-4" />
@@ -1293,7 +1564,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('indent')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Increase Indent / Tab Right"
                       >
                         <Indent className="w-4 h-4" />
@@ -1303,17 +1574,17 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('insertTable')}
-                        className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-emerald-300 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/60 rounded-md transition"
+                        className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/80 dark:hover:bg-emerald-900 border border-emerald-200 dark:border-emerald-700/60 rounded-md transition"
                         title="Insert Legal Table into Document"
                       >
-                        <Table className="w-3.5 h-3.5 text-emerald-400" />
+                        <Table className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                         Table
                       </button>
 
                       <button
                         type="button"
                         onClick={() => handleExecCommand('hr', '', '\n---\n')}
-                        className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                        className="p-1.5 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                         title="Horizontal Rule Line"
                       >
                         <Minus className="w-4 h-4" />
@@ -1322,10 +1593,10 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('insertPageBreak')}
-                        className="flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 rounded-md transition ml-0.5"
+                        className="flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 border border-indigo-200 dark:border-indigo-700/60 rounded-md transition ml-0.5"
                         title="Insert Page Break — Forces new page in Screen Preview, Print & Word Export"
                       >
-                        <Scissors className="w-3.5 h-3.5 text-indigo-400" />
+                        <Scissors className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                         Page Break
                       </button>
                     </div>
@@ -1335,7 +1606,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('insertClause', ' (१) ', ' (१) ')}
-                        className="px-2 py-0.5 text-xs font-bold text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 rounded-md transition"
+                        className="px-2 py-0.5 text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 border border-indigo-200 dark:border-indigo-700/60 rounded-md transition"
                         title="Insert Clause (१)"
                       >
                         (१)
@@ -1343,7 +1614,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('insertClause', ' (अ) ', ' (अ) ')}
-                        className="px-2 py-0.5 text-xs font-bold text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 rounded-md transition"
+                        className="px-2 py-0.5 text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 border border-indigo-200 dark:border-indigo-700/60 rounded-md transition"
                         title="Insert Subclause (अ)"
                       >
                         (अ)
@@ -1351,7 +1622,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={() => handleExecCommand('insertClause', '\n\nसत्यप्रतिज्ञेवर कथन :- \n', '\n\nसत्यप्रतिज्ञेवर कथन :- \n')}
-                        className="px-2 py-0.5 text-xs font-bold text-indigo-300 bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/60 rounded-md transition font-marathi"
+                        className="px-2 py-0.5 text-xs font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 border border-indigo-200 dark:border-indigo-700/60 rounded-md transition font-marathi"
                         title="Insert Verification Clause Header"
                       >
                         सत्यप्रतिज्ञा
@@ -1359,7 +1630,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       <button
                         type="button"
                         onClick={cleanAllRawTags}
-                        className="px-2 py-0.5 text-xs font-medium text-amber-300 bg-amber-950/80 hover:bg-amber-900 border border-amber-800/60 rounded-md transition flex items-center gap-1 ml-1"
+                        className="px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/80 dark:hover:bg-amber-900 border border-amber-200 dark:border-amber-800/60 rounded-md transition flex items-center gap-1 ml-1"
                         title="Clean raw HTML tags (e.g. remove <center> tags)"
                       >
                         Clean Raw Tags
@@ -1369,24 +1640,45 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
                   {/* Body Editor (Visual Rich Text vs Code View Textarea) */}
                   {editorMode === 'visual' ? (
-                    <div className="w-full flex-1 bg-slate-950 border border-slate-800 rounded-b-xl rounded-t-none p-4 md:p-6 overflow-y-auto flex flex-col items-center max-h-[620px]">
-                      <div
-                        ref={richEditorRef}
-                        contentEditable
-                        suppressContentEditableWarning
-                        onInput={() => {
-                          if (richEditorRef.current) {
-                            setTemplateText(richEditorRef.current.innerHTML);
-                          }
-                        }}
-                        onBlur={() => {
-                          if (richEditorRef.current) {
-                            setTemplateText(richEditorRef.current.innerHTML);
-                          }
-                        }}
-                        className="w-full max-w-3xl document-page paper-a4 rounded-xl border border-slate-300/40 relative bg-white text-slate-900 font-marathi text-sm md:text-base leading-relaxed selection:bg-indigo-100 shadow-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/50 p-0 overflow-visible shrink-0"
-                        style={{ minHeight: isMaximized ? '750px' : '550px' }}
-                      />
+                    <div className="w-full flex-1 bg-slate-200/80 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-b-xl rounded-t-none p-4 md:p-6 overflow-y-auto flex flex-col items-center min-h-0">
+                      <div className="w-full max-w-3xl relative shrink-0">
+                        <div
+                          ref={richEditorRef}
+                          contentEditable
+                          suppressContentEditableWarning
+                          onMouseUp={() => {
+                            if (isFormatSticky && copiedFormat) {
+                              const selStr = window.getSelection()?.toString().trim();
+                              if (selStr && selStr.length > 0) {
+                                handleExecCommand('applyFormat');
+                              }
+                            }
+                          }}
+                          onInput={() => {
+                            if (richEditorRef.current) {
+                              setTemplateText(richEditorRef.current.innerHTML);
+                            }
+                          }}
+                          onBlur={() => {
+                            if (richEditorRef.current) {
+                              setTemplateText(richEditorRef.current.innerHTML);
+                            }
+                          }}
+                          className="w-full document-page paper-a4 rounded-xl border border-slate-300/40 relative bg-white text-slate-900 font-marathi text-sm md:text-base leading-relaxed selection:bg-indigo-100 shadow-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500/50 p-0 overflow-visible shrink-0"
+                          style={{ minHeight: isMaximized ? '850px' : '550px' }}
+                        />
+
+                        {/* Dynamic Natural Page Break Indicators (simple dashed line) */}
+                        {editorMode === 'visual' && naturalPageBreaks.map((nb, idx) => (
+                          <div
+                            key={`nat-break-${idx}`}
+                            className="no-print natural-page-indicator"
+                            style={{ top: `${nb.y}px` }}
+                          >
+                            <div className="natural-page-line" />
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ) : (
                     <textarea
@@ -1395,22 +1687,22 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       value={templateText}
                       onChange={(e) => setTemplateText(e.target.value)}
                       placeholder={`समक्ष : {courtCity} येथील {courtName} यांचे कोर्टात...\n\n{party1Name} ....... अर्जदार क्र. १\n\nविरुद्ध\n\n{party2Name} ....... अर्जदार क्र. २`}
-                      className="w-full flex-1 bg-slate-950 border border-slate-800 rounded-b-xl rounded-t-none p-4 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500 leading-relaxed resize-y"
+                      className="w-full flex-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-b-xl rounded-t-none p-4 text-slate-900 dark:text-slate-100 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 leading-relaxed resize-y"
                     />
                   )}
                 </div>
 
                 {/* Right Placeholders & Fields Sidebar */}
                 {isSidebarOpen && (
-                  <div className="w-72 bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col shadow-inner shrink-0 max-h-[600px] overflow-hidden">
+                  <div className="w-72 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl p-3 flex flex-col shadow-inner shrink-0 min-h-0 h-full overflow-hidden">
                     <div className="mb-2.5">
                       <div className="flex items-center justify-between mb-1">
-                        <h4 className="font-semibold text-white text-xs">Available Fields & Placeholders</h4>
-                        <span className="text-[10px] text-indigo-300 bg-indigo-950 px-1.5 py-0.5 rounded font-mono border border-indigo-800">
+                        <h4 className="font-semibold text-slate-900 dark:text-white text-xs">Available Fields & Placeholders</h4>
+                        <span className="text-[10px] text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950 px-1.5 py-0.5 rounded font-mono border border-indigo-200 dark:border-indigo-800">
                           {allAvailablePlaceholders.length}
                         </span>
                       </div>
-                      <p className="text-[10px] text-slate-400 mb-2">Click any field to insert at cursor:</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mb-2">Click any field to insert at cursor:</p>
 
                       {/* Filter Search */}
                       <div className="relative">
@@ -1419,9 +1711,9 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                           value={placeholderSearch}
                           onChange={(e) => setPlaceholderSearch(e.target.value)}
                           placeholder="Search field or placeholder..."
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-7 pr-2 py-1.5 text-slate-200 text-[11px] focus:outline-none focus:border-indigo-500"
+                          className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg pl-7 pr-2 py-1.5 text-slate-900 dark:text-slate-200 text-[11px] focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-400"
                         />
-                        <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2 top-2" />
+                        <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-2 top-2" />
                       </div>
                     </div>
 
@@ -1429,7 +1721,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     <div className="flex-1 overflow-y-auto space-y-3 pr-1">
                       {filteredPlaceholderGroups.map((group) => (
                         <div key={group.title} className="space-y-1">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1">
+                          <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-1">
                             {group.title}
                           </div>
                           <div className="flex flex-col gap-1">
@@ -1442,13 +1734,13 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                   onClick={() => insertPlaceholderAtCursor(ph)}
                                   className={`w-full text-left px-2 py-1 rounded-md border font-mono text-[10px] flex items-center justify-between group transition ${
                                     isCustom
-                                      ? 'bg-indigo-950/70 hover:bg-indigo-900/90 border-indigo-700/60 text-indigo-300'
-                                      : 'bg-slate-900 hover:bg-slate-800 border-slate-800 text-slate-300'
+                                      ? 'bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/70 dark:hover:bg-indigo-900/90 border-indigo-200 dark:border-indigo-700/60 text-indigo-700 dark:text-indigo-300'
+                                      : 'bg-white hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
                                   }`}
                                   title={`Click to insert {${ph}} at cursor`}
                                 >
                                   <span className="truncate">{`{${ph}}`}</span>
-                                  <span className="text-[9px] opacity-0 group-hover:opacity-100 text-indigo-400 font-bold transition">
+                                  <span className="text-[9px] opacity-0 group-hover:opacity-100 text-indigo-600 dark:text-indigo-400 font-bold transition">
                                     +Insert
                                   </span>
                                 </button>
@@ -1469,8 +1761,8 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
             <div className="space-y-4 text-xs">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-white">Form Input Fields</h3>
-                  <p className="text-slate-400 text-[11px]">
+                  <h3 className="font-semibold text-slate-900 dark:text-white">Form Input Fields</h3>
+                  <p className="text-slate-500 dark:text-slate-400 text-[11px]">
                     Define the form input controls that appear in the advocate workspace for this template.
                   </p>
                 </div>
@@ -1478,9 +1770,9 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsSectionManagerOpen(true)}
-                    className="px-3 py-1.5 bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-700/60 rounded-xl font-medium text-xs flex items-center gap-1.5 transition"
+                    className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/80 dark:hover:bg-purple-900 text-purple-700 dark:text-purple-200 border border-purple-200 dark:border-purple-700/60 rounded-xl font-medium text-xs flex items-center gap-1.5 transition"
                   >
-                    <Layers className="w-4 h-4 text-purple-400" /> Manage Group Sections
+                    <Layers className="w-4 h-4 text-purple-600 dark:text-purple-400" /> Manage Group Sections
                   </button>
                   <button
                     type="button"
@@ -1493,57 +1785,69 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
               </div>
 
               {fields.length === 0 ? (
-                <div className="text-center py-12 border border-dashed border-slate-800 rounded-2xl bg-slate-950/30">
-                  <Layers className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                  <p className="text-slate-400 font-medium">No custom form fields defined yet.</p>
-                  <p className="text-slate-500 text-[11px] mb-4">Click "Add Form Field" above to configure inputs.</p>
+                <div className="text-center py-12 border border-dashed border-slate-300 dark:border-slate-800 rounded-2xl bg-slate-50 dark:bg-slate-950/30">
+                  <Layers className="w-8 h-8 text-slate-400 dark:text-slate-600 mx-auto mb-2" />
+                  <p className="text-slate-600 dark:text-slate-400 font-medium">No custom form fields defined yet.</p>
+                  <p className="text-slate-500 dark:text-slate-500 text-[11px] mb-4">Click "Add Form Field" above to configure inputs.</p>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {fields.map((field, idx) => (
-                    <div key={idx} className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-                        <span className="font-mono text-indigo-400 text-xs font-semibold">
+                    <div key={idx} className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3 shadow-sm">
+                      <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800/80 pb-2">
+                        <span className="font-mono text-indigo-600 dark:text-indigo-400 text-xs font-semibold">
                           #{idx + 1} — key: {'{' + field.key + '}'}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveField(idx)}
-                          className="text-slate-500 hover:text-red-400 p-1"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDuplicateField(idx)}
+                            className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-400 text-[11px] rounded-md font-medium flex items-center gap-1 transition"
+                            title="Duplicate this form input field with all settings"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            Duplicate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveField(idx)}
+                            className="text-slate-400 hover:text-red-500 dark:hover:text-red-400 p-1 transition"
+                            title="Delete field"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                         <div>
-                          <label className="block text-slate-400 text-[10px] mb-1">Variable Key (Placeholder)</label>
+                          <label className="block text-slate-600 dark:text-slate-400 text-[10px] mb-1">Variable Key (Placeholder)</label>
                           <input
                             type="text"
                             value={field.key}
                             onChange={(e) => handleUpdateField(idx, { ...field, key: e.target.value })}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-indigo-500"
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-slate-400 text-[10px] mb-1">Label (English)</label>
+                          <label className="block text-slate-600 dark:text-slate-400 text-[10px] mb-1">Label (English)</label>
                           <input
                             type="text"
                             value={field.label}
                             onChange={(e) => handleUpdateField(idx, { ...field, label: e.target.value })}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500"
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           />
                         </div>
 
                         <div>
                           <div className="flex items-center justify-between mb-1">
-                            <label className="block text-slate-400 text-[10px]">Label (Marathi)</label>
+                            <label className="block text-slate-600 dark:text-slate-400 text-[10px]">Label (Marathi)</label>
                             <button
                               type="button"
                               onClick={() => handleTransliterateProp(idx, 'labelMr', field.labelMr || field.label || '')}
                               disabled={transliteratingKey === `${idx}-labelMr` || (!field.labelMr && !field.label)}
-                              className="text-[10px] px-1 py-0.2 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
+                              className="text-[10px] px-1 py-0.2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
                               title="Convert Label to Marathi Devanagari"
                             >
                               {transliteratingKey === `${idx}-labelMr` ? '...' : 'म'}
@@ -1553,16 +1857,16 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             type="text"
                             value={field.labelMr || ''}
                             onChange={(e) => handleUpdateField(idx, { ...field, labelMr: e.target.value })}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500 font-marathi"
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-slate-400 text-[10px] mb-1">Input Type</label>
+                          <label className="block text-slate-600 dark:text-slate-400 text-[10px] mb-1">Input Type</label>
                           <select
                             value={field.type}
                             onChange={(e) => handleUpdateField(idx, { ...field, type: e.target.value as any })}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500"
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           >
                             <option value="text">Text Input</option>
                             <option value="textarea">Textarea (Long Text)</option>
@@ -1584,10 +1888,10 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                           : (field.options || []).map((o: any) => (typeof o === 'string' ? o : o.label)).join(', ');
 
                         return (
-                          <div className="p-3 bg-indigo-950/30 border border-indigo-800/60 rounded-xl space-y-2">
+                          <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 rounded-xl space-y-2">
                             <div className="flex items-center justify-between">
-                              <label className="block text-indigo-300 text-xs font-semibold flex items-center gap-1.5">
-                                <List className="w-3.5 h-3.5 text-indigo-400" />
+                              <label className="block text-indigo-800 dark:text-indigo-300 text-xs font-semibold flex items-center gap-1.5">
+                                <List className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                                 Dropdown Options (Enter choices separated by commas or lines, e.g. kids count)
                               </label>
                               <button
@@ -1613,7 +1917,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                   }
                                 }}
                                 disabled={transliteratingKey === `${idx}-options` || !currentText.trim()}
-                                className="text-[10px] px-1 py-0.2 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition cursor-pointer"
+                                className="text-[10px] px-1 py-0.2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition cursor-pointer"
                                 title="Convert Option Choices to Devanagari Marathi"
                               >
                                 {transliteratingKey === `${idx}-options` ? '...' : 'म'}
@@ -1637,18 +1941,18 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                 handleUpdateField(idx, { ...field, options: parsed });
                               }}
                               placeholder="e.g. No kids (कोणतेही अपत्य नाही), 1 Child (१ अपत्य), 2 Children (२ अपत्ये), 3 Children (३ अपत्ये)"
-                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500 font-marathi"
+                              className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                             />
 
                             {/* Options Badges Preview */}
                             <div className="flex flex-wrap gap-1.5 pt-1">
-                              <span className="text-[10px] text-slate-400 self-center mr-1">Preview ({field.options?.length || 0} options):</span>
+                              <span className="text-[10px] text-slate-500 dark:text-slate-400 self-center mr-1">Preview ({field.options?.length || 0} options):</span>
                               {(field.options || []).map((opt: any, oIdx: number) => {
                                 const lbl = typeof opt === 'string' ? opt : opt.label;
                                 return (
                                   <span
                                     key={oIdx}
-                                    className="text-[11px] px-2.5 py-0.5 bg-indigo-900/60 text-indigo-200 border border-indigo-700/60 rounded-full font-marathi flex items-center gap-1"
+                                    className="text-[11px] px-2.5 py-0.5 bg-indigo-100 dark:bg-indigo-900/60 text-indigo-800 dark:text-indigo-200 border border-indigo-200 dark:border-indigo-700/60 rounded-full font-marathi flex items-center gap-1"
                                   >
                                     {lbl}
                                     <button
@@ -1659,7 +1963,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                         setRawOptionsTextMap((prev) => ({ ...prev, [fieldKey]: newStr, [idx]: newStr }));
                                         handleUpdateField(idx, { ...field, options: updatedOpts });
                                       }}
-                                      className="text-indigo-400 hover:text-red-400 font-bold ml-0.5 cursor-pointer"
+                                      className="text-indigo-500 dark:text-indigo-400 hover:text-red-500 dark:hover:text-red-400 font-bold ml-0.5 cursor-pointer"
                                       title="Remove option"
                                     >
                                       ×
@@ -1674,10 +1978,10 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <div>
-                          <label className="block text-slate-400 text-[10px] mb-1 flex items-center justify-between">
+                          <label className="block text-slate-600 dark:text-slate-400 text-[10px] mb-1 flex items-center justify-between">
                             <span>Form Group Section</span>
                             {field.group && !['court', 'party1', 'party2', 'marriage', 'terms', 'general'].includes(field.group) && (
-                              <span className="text-[9px] text-purple-400 font-semibold">★ Custom</span>
+                              <span className="text-[9px] text-purple-600 dark:text-purple-400 font-semibold">★ Custom</span>
                             )}
                           </label>
                           <div className="space-y-1.5">
@@ -1690,7 +1994,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                   handleUpdateField(idx, { ...field, group: e.target.value });
                                 }
                               }}
-                              className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500 font-marathi"
+                              className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                             >
                               <optgroup label="Standard Sections">
                                 {availableSections.standard.map((s) => (
@@ -1719,7 +2023,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                 value={field.group || ''}
                                 onChange={(e) => handleUpdateField(idx, { ...field, group: e.target.value })}
                                 placeholder="e.g. Property Details / वारसदार तपशील"
-                                className="w-full bg-slate-950 border border-purple-800/80 rounded-lg px-2.5 py-1 text-purple-200 text-xs focus:outline-none focus:border-purple-500 placeholder:text-slate-600 font-medium font-marathi"
+                                className="w-full bg-white dark:bg-slate-950 border border-purple-300 dark:border-purple-800/80 rounded-lg px-2.5 py-1 text-purple-900 dark:text-purple-200 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 placeholder:text-slate-400 dark:placeholder:text-slate-600 font-medium font-marathi"
                               />
                             )}
                           </div>
@@ -1727,12 +2031,12 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
                         <div>
                           <div className="flex items-center justify-between mb-1">
-                            <label className="block text-slate-400 text-[10px]">Default Value</label>
+                            <label className="block text-slate-600 dark:text-slate-400 text-[10px]">Default Value</label>
                             <button
                               type="button"
                               onClick={() => handleTransliterateProp(idx, 'defaultValue', field.defaultValue || '')}
                               disabled={transliteratingKey === `${idx}-defaultValue` || !field.defaultValue}
-                              className="text-[10px] px-1 py-0.2 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
+                              className="text-[10px] px-1 py-0.2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
                               title="Convert Default Value to Marathi Devanagari"
                             >
                               {transliteratingKey === `${idx}-defaultValue` ? '...' : 'म'}
@@ -1742,18 +2046,18 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             type="text"
                             value={field.defaultValue || ''}
                             onChange={(e) => handleUpdateField(idx, { ...field, defaultValue: e.target.value })}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500 font-marathi"
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                           />
                         </div>
 
                         <div>
                           <div className="flex items-center justify-between mb-1">
-                            <label className="block text-slate-400 text-[10px]">Placeholder Text</label>
+                            <label className="block text-slate-600 dark:text-slate-400 text-[10px]">Placeholder Text</label>
                             <button
                               type="button"
                               onClick={() => handleTransliterateProp(idx, 'placeholder', field.placeholder || '')}
                               disabled={transliteratingKey === `${idx}-placeholder` || !field.placeholder}
-                              className="text-[10px] px-1 py-0.2 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
+                              className="text-[10px] px-1 py-0.2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition"
                               title="Convert Placeholder Text to Marathi Devanagari"
                             >
                               {transliteratingKey === `${idx}-placeholder` ? '...' : 'म'}
@@ -1763,7 +2067,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             type="text"
                             value={field.placeholder || ''}
                             onChange={(e) => handleUpdateField(idx, { ...field, placeholder: e.target.value })}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white text-xs focus:outline-none focus:border-indigo-500 font-marathi"
+                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-marathi"
                           />
                         </div>
                       </div>
@@ -1776,11 +2080,11 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/80 flex items-center justify-between shrink-0">
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium transition"
+            className="px-4 py-2 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-medium transition"
           >
             Cancel
           </button>
@@ -1798,23 +2102,23 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
       {/* SECTION MANAGER MODAL */}
       {isSectionManagerOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <Layers className="w-4 h-4 text-purple-400" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Layers className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                 Form Group Section Manager
               </h3>
               <button
                 type="button"
                 onClick={() => setIsSectionManagerOpen(false)}
-                className="text-slate-400 hover:text-white p-1"
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               Create, rename, or delete custom form group sections for this template. Renaming a section automatically updates all assigned form fields.
             </p>
 
@@ -1826,7 +2130,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                   value={newSectionInput}
                   onChange={(e) => setNewSectionInput(e.target.value)}
                   placeholder="New Section Name (e.g. Property Details / वारसदार तपशील)"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-3 pr-9 py-2 text-white text-xs focus:outline-none focus:border-purple-500 font-marathi"
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl pl-3 pr-9 py-2 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-purple-500 font-marathi"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -1842,7 +2146,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     )
                   }
                   disabled={transliteratingKey === 'newSectionInput' || !newSectionInput.trim()}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition disabled:opacity-50"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition disabled:opacity-50"
                   title="Convert Section Name to Marathi Devanagari"
                 >
                   {transliteratingKey === 'newSectionInput' ? '...' : 'म'}
@@ -1860,7 +2164,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
 
             {/* Active Custom Sections List */}
             <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-              <h4 className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">Custom Sections ({availableSections.customs.length})</h4>
+              <h4 className="text-[11px] font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider">Custom Sections ({availableSections.customs.length})</h4>
               {availableSections.customs.length === 0 ? (
                 <p className="text-slate-500 text-xs italic py-2">No custom sections added yet.</p>
               ) : (
@@ -1869,7 +2173,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                   const isEditing = editingSectionName?.oldName === secName;
 
                   return (
-                    <div key={secName} className="flex items-center justify-between bg-slate-950 border border-slate-800/80 rounded-xl px-3 py-2 text-xs">
+                    <div key={secName} className="flex items-center justify-between bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-xl px-3 py-2 text-xs">
                       {isEditing ? (
                         <div className="flex-1 flex gap-2 items-center mr-2">
                           <div className="relative flex-1">
@@ -1877,7 +2181,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                               type="text"
                               value={editingSectionName.newName}
                               onChange={(e) => setEditingSectionName({ ...editingSectionName, newName: e.target.value })}
-                              className="w-full bg-slate-900 border border-purple-500 rounded pl-2 pr-7 py-1 text-white text-xs font-marathi"
+                              className="w-full bg-white dark:bg-slate-900 border border-purple-500 rounded pl-2 pr-7 py-1 text-slate-900 dark:text-white text-xs font-marathi"
                               autoFocus
                             />
                             <button
@@ -1892,7 +2196,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                                 )
                               }
                               disabled={transliteratingKey === 'renameSectionInput' || !editingSectionName.newName.trim()}
-                              className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] px-1 py-0.2 bg-purple-950 hover:bg-purple-900 text-purple-300 border border-purple-700/60 rounded font-bold font-marathi shadow-sm transition disabled:opacity-50"
+                              className="absolute right-1 top-1/2 -translate-y-1/2 text-[9px] px-1 py-0.2 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950 dark:hover:bg-purple-900 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700/60 rounded font-bold font-marathi shadow-sm transition disabled:opacity-50"
                               title="Convert Section Name to Marathi Devanagari"
                             >
                               {transliteratingKey === 'renameSectionInput' ? '...' : 'म'}
@@ -1908,7 +2212,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                           <button
                             type="button"
                             onClick={() => setEditingSectionName(null)}
-                            className="px-2 py-1 bg-slate-800 text-slate-300 hover:text-white rounded text-[10px]"
+                            className="px-2 py-1 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded text-[10px]"
                           >
                             Cancel
                           </button>
@@ -1916,8 +2220,8 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       ) : (
                         <>
                           <div className="flex items-center gap-2">
-                            <span className="font-semibold text-purple-300 font-marathi">{secName}</span>
-                            <span className="text-[10px] text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                            <span className="font-semibold text-purple-700 dark:text-purple-300 font-marathi">{secName}</span>
+                            <span className="text-[10px] text-slate-600 dark:text-slate-400 bg-slate-200 dark:bg-slate-900 px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-800">
                               {fieldCount} field{fieldCount !== 1 ? 's' : ''}
                             </span>
                           </div>
@@ -1926,7 +2230,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             <button
                               type="button"
                               onClick={() => setEditingSectionName({ oldName: secName, newName: secName })}
-                              className="p-1 text-slate-400 hover:text-indigo-300 hover:bg-slate-900 rounded"
+                              className="p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 hover:bg-slate-200 dark:hover:bg-slate-900 rounded"
                               title="Rename Section"
                             >
                               <Type className="w-3.5 h-3.5" />
@@ -1934,7 +2238,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                             <button
                               type="button"
                               onClick={() => handleDeleteSection(secName)}
-                              className="p-1 text-slate-400 hover:text-red-400 hover:bg-slate-900 rounded"
+                              className="p-1 text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-900 rounded"
                               title="Delete Section"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1948,11 +2252,11 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
               )}
             </div>
 
-            <div className="flex justify-end pt-2 border-t border-slate-800">
+            <div className="flex justify-end pt-2 border-t border-slate-200 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setIsSectionManagerOpen(false)}
-                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold transition"
+                className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-white rounded-xl text-xs font-semibold transition"
               >
                 Done
               </button>

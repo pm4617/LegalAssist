@@ -38,6 +38,8 @@ import {
   Outdent,
   Table,
   Paintbrush,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
@@ -54,6 +56,8 @@ interface LegalWorkspaceProps {
   onSaveAdvocateName: (name: string) => void;
   isCopilotPinned?: boolean;
   onTogglePinCopilot?: () => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
 export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
@@ -63,6 +67,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   onSaveAdvocateName,
   isCopilotPinned = true,
   onTogglePinCopilot,
+  theme = 'light',
+  onToggleTheme,
 }) => {
   const [templates, setTemplates] = useState<LegalTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('divorce-13b-mr');
@@ -120,8 +126,83 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     lineHeight?: string;
     alignment?: string;
   } | null>(null);
+  const [isFormatSticky, setIsFormatSticky] = useState<boolean>(false);
   const docRichEditorRef = useRef<HTMLDivElement>(null);
   const isSelfEditingRef = useRef<boolean>(false);
+
+  // Pressing Escape cancels Format Painter mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && copiedFormat) {
+        setCopiedFormat(null);
+        setIsFormatSticky(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [copiedFormat]);
+
+  // Dynamically calculate natural page break positions incorporating 1" bottom margin and 1" top margin (192px gap)
+  const [naturalPageBreaks, setNaturalPageBreaks] = useState<{ y: number; pageNum: number }[]>([]);
+
+  useEffect(() => {
+    const computeNaturalBreaks = () => {
+      const editorEl = docRichEditorRef.current;
+      if (!editorEl) return;
+
+      const isA4 = paperSize === 'a4';
+      const printableHeight = isA4 ? 930 : 1152; // 9.69" A4 / 12.0" Legal content height
+      const totalPaperHeight = isA4 ? 1122 : 1344; // 11.69" A4 / 14.0" Legal full paper sheet
+      const topPadding = 96; // 1.0" top margin of Page 1
+      const pageMarginGap = 192; // 1.0" bottom margin + 1.0" top margin = 2.0" (192px)
+
+      const manualBreaks = Array.from(
+        editorEl.querySelectorAll<HTMLElement>('.page-break, hr.page-break, div.page-break')
+      );
+
+      const positions: { y: number; pageNum: number }[] = [];
+      let currentPageCounter = 1;
+
+      if (manualBreaks.length === 0) {
+        const contentHeight = editorEl.scrollHeight;
+        let y = topPadding + printableHeight;
+        while (y < contentHeight) {
+          currentPageCounter++;
+          positions.push({ y, pageNum: currentPageCounter });
+          y += totalPaperHeight;
+        }
+      } else {
+        // Section 0: before 1st manual page break
+        const firstBreakTop = manualBreaks[0].offsetTop;
+        let y0 = topPadding + printableHeight;
+        while (y0 < firstBreakTop) {
+          currentPageCounter++;
+          positions.push({ y: y0, pageNum: currentPageCounter });
+          y0 += totalPaperHeight;
+        }
+
+        // Sections after manual page breaks — accounts for 1" bottom margin + 1" top margin (192px gap)
+        manualBreaks.forEach((mb, idx) => {
+          currentPageCounter++; // Each manual page break forces a new printed page
+          const newPageContentStart = mb.offsetTop + pageMarginGap;
+          const nextBreakTop = idx < manualBreaks.length - 1 ? manualBreaks[idx + 1].offsetTop : editorEl.scrollHeight;
+
+          let ySec = newPageContentStart + printableHeight;
+          while (ySec < nextBreakTop) {
+            currentPageCounter++;
+            positions.push({ y: ySec, pageNum: currentPageCounter });
+            ySec += totalPaperHeight;
+          }
+        });
+      }
+
+      setNaturalPageBreaks(positions);
+    };
+
+    computeNaturalBreaks();
+    const timer = setTimeout(computeNaturalBreaks, 150);
+    return () => clearTimeout(timer);
+  }, [documentBody, paperSize, docEditorMode]);
 
   const unescapeAllEntities = (str: string): string => {
     if (!str) return '';
@@ -150,7 +231,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       .replace(/\[page-?break\]/gi, '<div class="page-break"></div><p><br></p>')
       .replace(/<!--\s*page-?break\s*-->/gi, '<div class="page-break"></div><p><br></p>')
       .replace(/<hr[^>]*class=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '<div class="page-break"></div><p><br></p>')
-      .replace(/<hr[^>]*style=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '<div class="page-break"></div><p><br></p>');
+      .replace(/<hr[^>]*style=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '<div class="page-break"></div><p><br></p>')
+      .replace(/--- COURT PAGE BREAK ---/g, '')
+      .replace(/<div class="page-break"[^>]*>([\s\S]*?)<\/div>/gi, '<div class="page-break"></div>');
 
     html = html
       .replace(/<center>([\s\S]*?)<\/center>/gi, '<p style="text-align: center;">$1</p>')
@@ -213,7 +296,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     if (docEditorMode === 'visual' && docRichEditorRef.current) {
       docRichEditorRef.current.focus();
       if (command === 'insertPageBreak') {
-        const pbHtml = `<div class="page-break" style="page-break-after: always; break-after: page; border-top: 2px dashed #6366f1; margin: 16px 0; padding-top: 4px; text-align: center; color: #818cf8; font-size: 10px; font-weight: bold; font-family: monospace;">--- COURT PAGE BREAK ---</div><p><br></p>`;
+        const pbHtml = `<div class="page-break"></div><p><br></p>`;
         document.execCommand('insertHTML', false, pbHtml);
       } else if (command === 'fontSizePt') {
         const pt = parseFloat(value);
@@ -273,13 +356,25 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       } else if (command === 'lineSpacing') {
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
-          const block = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
-          if (block) {
-            (block as HTMLElement).style.lineHeight = value;
+          const container = docRichEditorRef.current;
+          const range = sel.getRangeAt(0);
+          const blocks = container
+            ? Array.from(container.querySelectorAll('p, div, h1, h2, h3, blockquote, li, td, th'))
+            : [];
+          const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
+          if (selectedBlocks.length > 0) {
+            selectedBlocks.forEach((b) => {
+              (b as HTMLElement).style.lineHeight = value;
+            });
           } else {
-            document.execCommand('formatBlock', false, 'p');
-            const newBlock = sel.anchorNode?.parentElement?.closest('p, div');
-            if (newBlock) (newBlock as HTMLElement).style.lineHeight = value;
+            const block = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
+            if (block) {
+              (block as HTMLElement).style.lineHeight = value;
+            } else {
+              document.execCommand('formatBlock', false, 'p');
+              const newBlock = sel.anchorNode?.parentElement?.closest('p, div');
+              if (newBlock) (newBlock as HTMLElement).style.lineHeight = value;
+            }
           }
         }
       } else if (command === 'insertTable') {
@@ -305,10 +400,14 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               lineHeight: comp.lineHeight || undefined,
               alignment: comp.textAlign || undefined,
             });
+            setIsFormatSticky(value === 'sticky');
           }
         }
       } else if (command === 'applyFormat') {
         if (copiedFormat) {
+          const sel = window.getSelection();
+          const container = docRichEditorRef.current;
+
           if (copiedFormat.bold !== undefined && document.queryCommandState('bold') !== copiedFormat.bold) {
             document.execCommand('bold');
           }
@@ -321,16 +420,34 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           if (copiedFormat.fontSize) {
             const pt = parseFloat(copiedFormat.fontSize);
             if (!isNaN(pt)) {
-              const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
-              if (target) (target as HTMLElement).style.fontSize = `${pt}pt`;
+              if (sel && sel.rangeCount > 0 && !sel.isCollapsed && container) {
+                const range = sel.getRangeAt(0);
+                const blocks = Array.from(container.querySelectorAll('p, div, span, h1, h2, h3, td, th'));
+                const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
+                if (selectedBlocks.length > 0) {
+                  selectedBlocks.forEach((b) => ((b as HTMLElement).style.fontSize = `${pt}pt`));
+                } else {
+                  const target = sel.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
+                  if (target) (target as HTMLElement).style.fontSize = `${pt}pt`;
+                }
+              }
             }
           }
           if (copiedFormat.fontFamily) {
             document.execCommand('fontName', false, copiedFormat.fontFamily);
           }
           if (copiedFormat.lineHeight) {
-            const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
-            if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+            if (sel && sel.rangeCount > 0 && container) {
+              const range = sel.getRangeAt(0);
+              const blocks = Array.from(container.querySelectorAll('p, div, h1, h2, h3, blockquote, li, td, th'));
+              const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
+              if (selectedBlocks.length > 0) {
+                selectedBlocks.forEach((b) => ((b as HTMLElement).style.lineHeight = copiedFormat.lineHeight!));
+              } else {
+                const target = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
+                if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+              }
+            }
           }
           if (copiedFormat.alignment) {
             if (copiedFormat.alignment === 'center') document.execCommand('justifyCenter');
@@ -338,7 +455,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             else if (copiedFormat.alignment === 'left') document.execCommand('justifyLeft');
             else if (copiedFormat.alignment === 'justify') document.execCommand('justifyFull');
           }
-          setCopiedFormat(null);
+          if (!isFormatSticky) {
+            setCopiedFormat(null);
+            setIsFormatSticky(false);
+          }
         }
       } else {
         document.execCommand(command, false, value);
@@ -1015,6 +1135,13 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       }
       setDocEditorMode('visual');
     }
+    if (docRichEditorRef.current) {
+      const pbEls = docRichEditorRef.current.querySelectorAll('.page-break');
+      pbEls.forEach((el) => {
+        el.removeAttribute('style');
+        el.innerHTML = '';
+      });
+    }
     setTimeout(() => {
       window.print();
     }, 150);
@@ -1132,10 +1259,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             id={field.key}
             checked={Boolean(value)}
             onChange={(e) => handleFactChange(field.key, e.target.checked)}
-            className="rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+            className="rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
           />
-          <label htmlFor={field.key} className="text-xs text-slate-300 font-medium cursor-pointer select-none">
-            {field.label} {field.labelMr && <span className="text-slate-400 font-marathi">({field.labelMr})</span>}
+          <label htmlFor={field.key} className="text-xs text-slate-700 dark:text-slate-300 font-medium cursor-pointer select-none">
+            {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-400 font-marathi">({field.labelMr})</span>}
           </label>
         </div>
       );
@@ -1149,14 +1276,14 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
       return (
         <div key={field.key}>
-          <label className="text-[11px] text-slate-400 block mb-1">
-            {field.label} {field.labelMr && <span className="text-slate-500 font-marathi">({field.labelMr})</span>}
-            {field.required && <span className="text-rose-400 ml-0.5">*</span>}
+          <label className="text-[11px] text-slate-600 dark:text-slate-400 block mb-1 font-medium">
+            {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
+            {field.required && <span className="text-rose-500 ml-0.5">*</span>}
           </label>
           <select
             value={value}
             onChange={(e) => handleFactChange(field.key, e.target.value)}
-            className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white focus:ring-1 focus:ring-indigo-500 font-marathi"
+            className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 font-marathi"
           >
             {(!value || opts.length === 0) && <option value="">-- पर्याय निवडा (Select Option) --</option>}
             {opts.map((opt: any, oIdx: number) => (
@@ -1173,15 +1300,15 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       return (
         <div key={field.key}>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] text-slate-400">
-              {field.label} {field.labelMr && <span className="text-slate-500 font-marathi">({field.labelMr})</span>}
-              {field.required && <span className="text-rose-400 ml-0.5">*</span>}
+            <label className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+              {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
+              {field.required && <span className="text-rose-500 ml-0.5">*</span>}
             </label>
             <button
               type="button"
               onClick={() => handleTransliterateField(field.key, value)}
               disabled={transliteratingField === field.key || !value}
-              className="text-[11px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 disabled:opacity-40 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+              className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
               title="Convert English text to Marathi Devanagari (मराठीत रुपांतर करा)"
             >
               {transliteratingField === field.key ? '...' : 'म'}
@@ -1192,7 +1319,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             value={value}
             onChange={(e) => handleFactChange(field.key, e.target.value)}
             placeholder={field.placeholder || ''}
-            className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
+            className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
           />
         </div>
       );
@@ -1205,21 +1332,21 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       return (
         <div key={field.key}>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] text-slate-400">
-              {field.label} {field.labelMr && <span className="text-slate-500 font-marathi">({field.labelMr})</span>}
-              {field.required && <span className="text-rose-400 ml-0.5">*</span>}
+            <label className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+              {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
+              {field.required && <span className="text-rose-500 ml-0.5">*</span>}
             </label>
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => handleTransliterateField(field.key, value)}
                 disabled={transliteratingField === field.key || !value}
-                className="text-[11px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 disabled:opacity-40 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+                className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
                 title="Convert Date text to Marathi Devanagari numerals (मराठीत रुपांतर करा)"
               >
                 {transliteratingField === field.key ? '...' : 'म'}
               </button>
-              <span className="text-[9px] text-indigo-400 font-mono">DD/MM/YYYY</span>
+              <span className="text-[9px] text-indigo-600 dark:text-indigo-400 font-mono">DD/MM/YYYY</span>
             </div>
           </div>
           <div className="relative flex items-center">
@@ -1228,7 +1355,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               value={displayVal}
               onChange={(e) => handleFactChange(field.key, e.target.value)}
               placeholder="DD/MM/YYYY (उदा. 03/09/2026)"
-              className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
+              className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
             />
             <div className="absolute right-2.5 pointer-events-none text-slate-400">
               <Calendar className="w-3.5 h-3.5" />
@@ -1253,15 +1380,15 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     return (
       <div key={field.key}>
         <div className="flex items-center justify-between mb-1">
-          <label className="text-[11px] text-slate-400">
-            {field.label} {field.labelMr && <span className="text-slate-500 font-marathi">({field.labelMr})</span>}
-            {field.required && <span className="text-rose-400 ml-0.5">*</span>}
+          <label className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+            {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
+            {field.required && <span className="text-rose-500 ml-0.5">*</span>}
           </label>
           <button
             type="button"
             onClick={() => handleTransliterateField(field.key, value)}
             disabled={transliteratingField === field.key || !value}
-            className="text-[11px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 disabled:opacity-40 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+            className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
             title="Convert English text to Marathi Devanagari (मराठीत रुपांतर करा)"
           >
             {transliteratingField === field.key ? '...' : 'म'}
@@ -1272,28 +1399,28 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           value={value}
           onChange={(e) => handleFactChange(field.key, e.target.value)}
           placeholder={field.placeholder || ''}
-          className="w-full px-2.5 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
+          className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
         />
       </div>
     );
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <div className="flex flex-col h-screen bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 overflow-hidden font-sans transition-colors duration-200">
       {/* Top Navbar */}
-      <header className="no-print h-16 border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 lg:px-6 flex items-center justify-between z-30 shrink-0">
+      <header className="no-print h-16 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur px-4 lg:px-6 flex items-center justify-between z-30 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center shadow-lg shadow-indigo-600/30">
             <Scale className="w-5 h-5 text-white" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="font-bold text-white tracking-tight text-base sm:text-lg">JurisCopilot</h1>
-              <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800 font-medium">
+              <h1 className="font-bold text-slate-900 dark:text-white tracking-tight text-base sm:text-lg">JurisCopilot</h1>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 font-medium">
                 Legal AI Copilot
               </span>
             </div>
-            <p className="text-xs text-slate-400 hidden sm:block">
+            <p className="text-xs text-slate-500 dark:text-slate-400 hidden sm:block">
               Advocate Studio & Intelligent Document Drafter
             </p>
           </div>
@@ -1305,10 +1432,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             <select
               value={selectedTemplateId}
               onChange={(e) => setSelectedTemplateId(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 hover:border-slate-600 text-white text-xs sm:text-sm rounded-xl py-2 pl-3 pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none font-medium truncate transition cursor-pointer"
+              className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-600 text-slate-900 dark:text-white text-xs sm:text-sm rounded-xl py-2 pl-3 pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none font-medium truncate transition cursor-pointer"
             >
               {templates.map((tmpl) => (
-                <option key={tmpl.id} value={tmpl.id} className="bg-slate-900 text-white">
+                <option key={tmpl.id} value={tmpl.id} className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white">
                   {tmpl.title} {tmpl.language === 'mr' ? ' [मराठी]' : ''}
                 </option>
               ))}
@@ -1320,11 +1447,11 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         {/* Right Actions */}
         <div className="flex items-center gap-2">
           {/* View Mode Toggle (Mobile / Desktop) */}
-          <div className="hidden md:flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700 text-xs">
+          <div className="hidden md:flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-300 dark:border-slate-700 text-xs">
             <button
               onClick={() => setViewMode('split')}
               className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'split' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                viewMode === 'split' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
             >
               Split View
@@ -1332,7 +1459,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             <button
               onClick={() => setViewMode('form')}
               className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'form' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                viewMode === 'form' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
             >
               Form Wizard
@@ -1340,7 +1467,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             <button
               onClick={() => setViewMode('preview')}
               className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'preview' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                viewMode === 'preview' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
             >
               Draft Preview
@@ -1350,10 +1477,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           {/* Quick AI Extract Notes */}
           <button
             onClick={() => setIsNotesModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-700/50 rounded-xl text-xs sm:text-sm font-medium transition shadow-sm"
+            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-600/20 dark:hover:bg-indigo-600/30 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/50 rounded-xl text-xs sm:text-sm font-medium transition shadow-sm"
             title="Paste client notes to auto-populate draft"
           >
-            <Sparkles className="w-4 h-4 text-indigo-400" />
+            <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
             <span className="hidden sm:inline">Extract Notes</span>
           </button>
 
@@ -1371,7 +1498,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           {/* Print / PDF */}
           <button
             onClick={handlePrint}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl border border-slate-700 transition"
+            className="p-2 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-700 transition"
             title="Print or Save as PDF"
           >
             <Printer className="w-4 h-4" />
@@ -1380,16 +1507,31 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           {/* Template Manager */}
           <button
             onClick={() => setIsTemplateManagerOpen(true)}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl border border-slate-700 transition"
+            className="p-2 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-700 transition"
             title="Manage, Create, Edit & Delete Legal Templates"
           >
             <FolderEdit className="w-4 h-4" />
           </button>
 
+          {/* Theme Mode Switcher */}
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              className="p-2 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-700 transition"
+              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            >
+              {theme === 'dark' ? (
+                <Sun className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Moon className="w-4 h-4 text-indigo-600" />
+              )}
+            </button>
+          )}
+
           {/* Settings */}
           <button
             onClick={() => setIsSettingsOpen(true)}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl border border-slate-700 transition"
+            className="p-2 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-700 transition"
             title="Configure Gemini API Key & Firm Profile"
           >
             <Settings className="w-4 h-4" />
@@ -1403,33 +1545,33 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         {(viewMode === 'split' || viewMode === 'form') && (
           <div
             style={viewMode === 'split' ? { width: `${formPaneWidth}px` } : undefined}
-            className={`no-print border-r border-slate-800 bg-slate-900/60 overflow-y-auto ${
+            className={`no-print border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 overflow-y-auto ${
               viewMode === 'form' ? 'w-full max-w-4xl mx-auto' : 'shrink-0'
             }`}
           >
             <div className="p-4 sm:p-5 space-y-6">
               {/* Active Template Header Info & Multi-Document Draft Manager */}
-              <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-800/80 to-slate-800/40 border border-slate-700/60 space-y-3">
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-gradient-to-br dark:from-slate-800/80 dark:to-slate-800/40 border border-slate-200 dark:border-slate-700/60 space-y-3 shadow-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs uppercase font-semibold tracking-wider text-indigo-400">
+                  <span className="text-xs uppercase font-semibold tracking-wider text-indigo-600 dark:text-indigo-400">
                     Active Template
                   </span>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium">
                     {activeTemplate?.category.toUpperCase()}
                   </span>
                 </div>
-                <h3 className="font-bold text-white text-sm sm:text-base">
+                <h3 className="font-bold text-slate-900 dark:text-white text-sm sm:text-base">
                   {activeTemplate?.title}
                 </h3>
-                <p className="text-xs text-slate-400 line-clamp-2">
+                <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
                   {activeTemplate?.description}
                 </p>
 
                 {/* Multi-Draft Session Controls */}
-                <div className="pt-2.5 border-t border-slate-700/60 space-y-2">
+                <div className="pt-2.5 border-t border-slate-200 dark:border-slate-700/60 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                    <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider flex items-center gap-1">
+                      <FileText className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                       Document Drafts ({currentTemplateDrafts.length})
                     </span>
                     <button
@@ -1446,7 +1588,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     <select
                       value={activeDraftId}
                       onChange={(e) => switchDraft(e.target.value)}
-                      className="flex-1 bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-xl py-1.5 px-2.5 focus:outline-none focus:border-indigo-500 font-medium truncate cursor-pointer font-marathi"
+                      className="flex-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-200 text-xs rounded-xl py-1.5 px-2.5 focus:outline-none focus:border-indigo-500 font-medium truncate cursor-pointer font-marathi"
                     >
                       {currentTemplateDrafts.map((d, index) => (
                         <option key={d.id} value={d.id}>
@@ -1459,7 +1601,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                       <button
                         type="button"
                         onClick={() => handleDeleteDraft(activeDraftId)}
-                        className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-slate-900 border border-slate-700/80 rounded-xl transition cursor-pointer"
+                        className="p-1.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-xl transition cursor-pointer"
                         title="Delete current document draft"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1471,11 +1613,11 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
               {/* Form Input Groups */}
               <div className="space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                     Client & Case Particulars
                   </h4>
-                  <span className="text-[11px] text-slate-400">Updates draft automatically</span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">Updates draft automatically</span>
                 </div>
 
                 {/* Dynamic Form Input Groups based on activeTemplate.fields */}
@@ -1485,7 +1627,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     return (
                       <div
                         key={group.key}
-                        className="space-y-3 p-3.5 rounded-xl bg-slate-850/50 border border-slate-800"
+                        className="space-y-3 p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800"
                       >
                         <div className="flex items-center justify-between">
                           <h5 className={`text-xs font-semibold ${header.color}`}>
@@ -1504,7 +1646,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     );
                   })
                 ) : (
-                  <div className="p-4 rounded-xl bg-slate-800/40 text-center text-xs text-slate-400">
+                  <div className="p-4 rounded-xl bg-slate-100 dark:bg-slate-800/40 text-center text-xs text-slate-500 dark:text-slate-400">
                     No custom fields required for this template.
                   </div>
                 )}
@@ -1526,20 +1668,20 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
         {/* Center / Right Column: Live Legal Document Draft & Editor */}
         {(viewMode === 'split' || viewMode === 'preview') && (
-          <div className="flex-1 flex flex-col bg-slate-950 overflow-hidden relative">
+          <div className="flex-1 flex flex-col bg-slate-100 dark:bg-slate-950 overflow-hidden relative">
             {/* Document Action Toolbar */}
-            <div className="no-print border-b border-slate-800/80 bg-slate-900/60 px-4 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
+            <div className="no-print border-b border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900/60 px-4 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-indigo-400" />
-                <span className="text-xs font-semibold text-slate-200 truncate max-w-[180px] sm:max-w-none">
+                <FileText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[180px] sm:max-w-none">
                   {activeTemplate?.title || documentTitle}
                 </span>
-                <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 hidden sm:inline">
+                <span className="text-[11px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hidden sm:inline border border-slate-200 dark:border-slate-700">
                   {documentBody.length} chars
                 </span>
 
                 {/* View Mode Toggle: Visual Rich Text vs Code View */}
-                <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700 ml-2">
+                <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-300 dark:border-slate-700 ml-2">
                   <button
                     onClick={() => {
                       if (docEditorMode === 'code' && docRichEditorRef.current) {
@@ -1550,7 +1692,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded font-medium transition ${
                       docEditorMode === 'visual'
                         ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                     title="Render document draft as Visual Rich Text (HTML formatted)"
                   >
@@ -1567,7 +1709,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded font-medium transition ${
                       docEditorMode === 'code'
                         ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                     title="View and edit raw HTML tags directly"
                   >
@@ -1577,13 +1719,13 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                 </div>
 
                 {/* Paper Size Selector: Legal (8.5x14) vs A4 (8.27x11.69) */}
-                <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700 ml-1.5">
+                <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-300 dark:border-slate-700 ml-1.5">
                   <button
                     onClick={() => setPaperSize('legal')}
                     className={`text-[11px] px-2.5 py-1 rounded font-medium transition ${
                       paperSize === 'legal'
                         ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                     title="Legal Paper (8.5 x 14 in) - Standard Indian District & High Court Petitions"
                   >
@@ -1594,7 +1736,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     className={`text-[11px] px-2.5 py-1 rounded font-medium transition ${
                       paperSize === 'a4'
                         ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                     title="A4 Paper (8.27 x 11.69 in) - Standard Notices & Agreements"
                   >
@@ -1606,75 +1748,106 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               <div className="flex items-center gap-1.5 flex-wrap">
                 {/* Visual Rich Text Formatting Controls */}
                 {docEditorMode === 'visual' && (
-                  <div className="flex items-center gap-1 bg-slate-800/80 p-1 rounded-lg border border-slate-700/80 mr-2">
+                  <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-lg border border-slate-300 dark:border-slate-700/80 mr-2">
                     <button
                       onClick={() => handleDocExecCommand('bold')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Bold Selection (Ctrl+B)"
                     >
                       <Bold className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('italic')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Italic Selection (Ctrl+I)"
                     >
                       <Italic className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('underline')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Underline Selection (Ctrl+U)"
                     >
                       <Underline className="w-3.5 h-3.5" />
                     </button>
                     {/* Format Painter (🎨) */}
                     <button
-                      onClick={() => handleDocExecCommand(copiedFormat ? 'applyFormat' : 'copyFormat')}
-                      className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition cursor-pointer ${
+                      type="button"
+                      onClick={() => {
+                        if (copiedFormat) {
+                          const selStr = window.getSelection()?.toString().trim();
+                          if (selStr && selStr.length > 0) {
+                            handleDocExecCommand('applyFormat');
+                          } else {
+                            setCopiedFormat(null);
+                            setIsFormatSticky(false);
+                          }
+                        } else {
+                          handleDocExecCommand('copyFormat', 'single');
+                        }
+                      }}
+                      onDoubleClick={(e) => {
+                        e.preventDefault();
+                        handleDocExecCommand('copyFormat', 'sticky');
+                      }}
+                      className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition cursor-pointer select-none ${
                         copiedFormat
-                          ? 'bg-amber-500 text-black font-bold ring-2 ring-amber-300 animate-pulse'
-                          : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-700'
+                          ? isFormatSticky
+                            ? 'bg-amber-400 text-black font-extrabold ring-2 ring-amber-200 shadow-md'
+                            : 'bg-amber-500 text-black font-bold ring-2 ring-amber-300 animate-pulse'
+                          : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white border border-slate-300 dark:border-slate-700'
                       }`}
-                      title={copiedFormat ? "Click to Apply Copied Formatting to Selected Text" : "Format Painter: Copy Formatting of Current Selection"}
+                      title={
+                        copiedFormat
+                          ? isFormatSticky
+                            ? 'Sticky Format Painter Active! Select text anywhere to format continuously. Click or press Esc to exit.'
+                            : 'Click to Apply Format. Double-click Format Painter button to lock sticky for multiple applies.'
+                          : 'Format Painter: Single click to copy & apply once. Double-click to lock sticky for multiple applies.'
+                      }
                     >
-                      <Paintbrush className="w-3.5 h-3.5 text-amber-400" />
-                      <span>{copiedFormat ? 'Apply Format' : 'Format Painter'}</span>
+                      <Paintbrush className={`w-3.5 h-3.5 ${copiedFormat ? 'text-slate-950 font-bold' : 'text-amber-500 dark:text-amber-400'}`} />
+                      <span>
+                        {copiedFormat
+                          ? isFormatSticky
+                            ? 'Sticky Painter 📌'
+                            : 'Apply Format'
+                          : 'Format Painter'}
+                      </span>
                     </button>
-                    <div className="h-3 w-px bg-slate-700 mx-0.5" />
+                    <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
                     <button
                       onClick={() => handleDocExecCommand('align', 'left')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Align Left"
                     >
                       <AlignLeft className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('align', 'center')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Align Center"
                     >
                       <AlignCenter className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('align', 'right')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Align Right"
                     >
                       <AlignRight className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('align', 'justify')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Align Justify"
                     >
                       <AlignJustify className="w-3.5 h-3.5" />
                     </button>
-                    <div className="h-3 w-px bg-slate-700 mx-0.5" />
+                    <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
                     {/* Manual Font Size Input in pt */}
-                    <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 mr-1" title="Type exact Font Size in pt (e.g. 12, 14, 18)">
-                      <span className="text-[10px] text-slate-400 font-mono">Size:</span>
+                    <div className="flex items-center gap-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 mr-1" title="Type exact Font Size in pt (e.g. 12, 14, 18)">
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Size:</span>
                       <input
                         type="number"
                         min="6"
@@ -1688,9 +1861,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                           }
                         }}
                         onBlur={(e) => handleDocExecCommand('fontSizePt', e.target.value)}
-                        className="w-9 bg-transparent text-slate-200 text-xs font-semibold focus:outline-none text-center"
+                        className="w-9 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
                       />
-                      <span className="text-[10px] text-slate-400 font-mono">pt</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">pt</span>
                       <select
                         onChange={(e) => {
                           if (e.target.value) {
@@ -1699,7 +1872,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                             handleDocExecCommand('fontSizePt', e.target.value);
                           }
                         }}
-                        className="bg-transparent text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-700 pl-0.5"
+                        className="bg-transparent text-slate-500 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-0.5"
                         defaultValue=""
                       >
                         <option value="" disabled>▾</option>
@@ -1716,24 +1889,24 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     {/* Font Size Increase / Decrease buttons */}
                     <button
                       onClick={() => handleDocExecCommand('increaseFontSize')}
-                      className="px-1.5 py-0.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-700 border border-slate-700 rounded transition"
+                      className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded transition"
                       title="Increase Font Size +1pt (A+)"
                     >
                       A+
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('decreaseFontSize')}
-                      className="px-1.5 py-0.5 text-xs font-bold text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-700 border border-slate-700 rounded transition"
+                      className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded transition"
                       title="Decrease Font Size -1pt (A-)"
                     >
                       A-
                     </button>
 
-                    <div className="h-3 w-px bg-slate-700 mx-0.5" />
+                    <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
                     {/* Manual Line Spacing Input */}
-                    <div className="flex items-center gap-1 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 mr-1" title="Type exact Line Spacing (e.g. 1.0, 1.2, 1.5, 1.6, 2.0)">
-                      <span className="text-[10px] text-slate-400 font-mono">Line:</span>
+                    <div className="flex items-center gap-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 mr-1" title="Type exact Line Spacing (e.g. 1.0, 1.2, 1.5, 1.6, 2.0)">
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Line:</span>
                       <input
                         type="number"
                         min="0.5"
@@ -1747,9 +1920,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                           }
                         }}
                         onBlur={(e) => handleDocExecCommand('lineSpacing', e.target.value)}
-                        className="w-9 bg-transparent text-slate-200 text-xs font-semibold focus:outline-none text-center"
+                        className="w-9 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
                       />
-                      <span className="text-[10px] text-slate-400 font-mono">x</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">x</span>
                       <select
                         onChange={(e) => {
                           if (e.target.value) {
@@ -1758,7 +1931,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                             handleDocExecCommand('lineSpacing', e.target.value);
                           }
                         }}
-                        className="bg-transparent text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-700 pl-0.5"
+                        className="bg-transparent text-slate-500 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-0.5"
                         defaultValue=""
                       >
                         <option value="" disabled>▾</option>
@@ -1773,14 +1946,14 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     {/* Increase / Decrease Indent */}
                     <button
                       onClick={() => handleDocExecCommand('outdent')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Decrease Indent / Outdent Left"
                     >
                       <Outdent className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={() => handleDocExecCommand('indent')}
-                      className="p-1 text-slate-300 hover:text-white hover:bg-slate-700 rounded transition"
+                      className="p-1 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition"
                       title="Increase Indent / Tab Right"
                     >
                       <Indent className="w-3.5 h-3.5" />
@@ -1789,29 +1962,29 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     {/* Insert Table */}
                     <button
                       onClick={() => handleDocExecCommand('insertTable')}
-                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded font-medium transition"
+                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/80 dark:hover:bg-emerald-900 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700/60 rounded font-medium transition"
                       title="Insert Legal Table into Document"
                     >
-                      <Table className="w-3 h-3 text-emerald-400" />
+                      <Table className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                       <span>Table</span>
                     </button>
 
-                    <div className="h-3 w-px bg-slate-700 mx-0.5" />
+                    <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
                     <button
                       onClick={() => handleDocExecCommand('insertPageBreak')}
-                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/60 rounded font-medium transition"
+                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 text-indigo-800 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700/60 rounded font-medium transition"
                       title="Insert Page Break (Forces Page Break in Screen Preview, Print & Word Exporter)"
                     >
-                      <Scissors className="w-3 h-3 text-indigo-400" />
+                      <Scissors className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
                       <span>Page Break</span>
                     </button>
                     <button
                       onClick={() => handleTranslateDocument()}
                       disabled={isTranslating}
-                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-950/80 hover:bg-indigo-900 disabled:opacity-50 text-indigo-300 border border-indigo-700/60 rounded font-medium transition"
+                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/80 dark:hover:bg-indigo-900 disabled:opacity-50 text-indigo-800 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700/60 rounded font-medium transition"
                       title="Translate active document draft between English and Marathi (Devanagari)"
                     >
-                      <Languages className="w-3 h-3 text-indigo-400" />
+                      <Languages className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
                       <span>{isTranslating ? 'Translating...' : 'Translate (EN/MR)'}</span>
                     </button>
                   </div>
@@ -1833,10 +2006,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                             setDocumentBody((prev) => `${prev}\n\n${textToInsert}`);
                           }
                         }}
-                        className="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 transition flex items-center gap-1"
+                        className="text-[11px] px-2 py-0.5 rounded bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-indigo-700 dark:text-indigo-300 border border-slate-300 dark:border-slate-700 transition flex items-center gap-1"
                         title={clause.content}
                       >
-                        <PlusCircle className="w-3 h-3 text-indigo-400" />
+                        <PlusCircle className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
                         {clause.titleMr || clause.title}
                       </button>
                     ))}
@@ -1845,22 +2018,42 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
                 <button
                   onClick={handleCopy}
-                  className="flex items-center gap-1 text-xs px-2.5 py-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"
+                  className="flex items-center gap-1 text-xs px-2.5 py-1 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition"
                 >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
                 </button>
               </div>
             </div>
 
             {/* Document Content View */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-8 flex flex-col items-center bg-slate-950/70">
+            <div className="flex-1 overflow-y-auto p-4 md:p-8 flex flex-col items-center bg-slate-200/80 dark:bg-slate-950/70">
               <div className={`w-full max-w-3xl document-page paper-${paperSize} rounded-xl border border-slate-300/40 relative h-auto bg-white text-slate-900 font-marathi mb-16 shadow-2xl shrink-0`}>
+                
+                {/* Dynamic Natural Page Break Indicators (simple dashed line) */}
+                {docEditorMode === 'visual' && naturalPageBreaks.map((nb, idx) => (
+                  <div
+                    key={`nat-break-${idx}`}
+                    className="no-print natural-page-indicator"
+                    style={{ top: `${nb.y}px` }}
+                  >
+                    <div className="natural-page-line" />
+                  </div>
+                ))}
+
                 {docEditorMode === 'visual' ? (
                   <div
                     ref={docRichEditorRef}
                     contentEditable
                     suppressContentEditableWarning
+                    onMouseUp={() => {
+                      if (isFormatSticky && copiedFormat) {
+                        const selStr = window.getSelection()?.toString().trim();
+                        if (selStr && selStr.length > 0) {
+                          handleDocExecCommand('applyFormat');
+                        }
+                      }
+                    }}
                     onInput={() => {
                       if (docRichEditorRef.current) {
                         isSelfEditingRef.current = true;
@@ -1906,6 +2099,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         onSaveApiKey={onSaveApiKey}
         advocateName={advocateName}
         onSaveAdvocateName={onSaveAdvocateName}
+        theme={theme}
+        onToggleTheme={onToggleTheme}
       />
 
       <TemplateManagerModal
@@ -1918,24 +2113,24 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
       {/* NEW DOCUMENT DRAFT MODAL */}
       {isNewDraftModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-150">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <PlusCircle className="w-4 h-4 text-indigo-400" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-150 text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <PlusCircle className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                 Create New Document Draft
               </h3>
               <button
                 type="button"
                 onClick={() => setIsNewDraftModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1"
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-400">
-              Select how you want to initialize your new document draft for <strong className="text-indigo-300">{activeTemplate?.title}</strong>:
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              Select how you want to initialize your new document draft for <strong className="text-indigo-600 dark:text-indigo-300">{activeTemplate?.title}</strong>:
             </p>
 
             <div className="space-y-3">
@@ -1943,16 +2138,16 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               <button
                 type="button"
                 onClick={() => handleCreateNewDraft('duplicate')}
-                className="w-full text-left p-3.5 bg-slate-950 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-600/80 rounded-xl transition group flex items-start gap-3 cursor-pointer"
+                className="w-full text-left p-3.5 bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950 dark:hover:bg-indigo-950/40 border border-slate-200 hover:border-indigo-500 dark:border-slate-800 dark:hover:border-indigo-600/80 rounded-xl transition group flex items-start gap-3 cursor-pointer"
               >
-                <div className="w-8 h-8 rounded-lg bg-indigo-950 border border-indigo-700/60 flex items-center justify-center text-indigo-300 shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition">
+                <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-700/60 flex items-center justify-center text-indigo-600 dark:text-indigo-300 shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition">
                   <Copy className="w-4 h-4" />
                 </div>
                 <div className="space-y-0.5">
-                  <h4 className="text-xs font-bold text-slate-200 group-hover:text-white">
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-white">
                     Keep Current Inputs (Duplicate Draft)
                   </h4>
-                  <p className="text-[11px] text-slate-400 leading-snug">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
                     Spawns a new document copy keeping all entered client details, addresses, and court facts intact. Great for related parties or similar case filings.
                   </p>
                 </div>
@@ -1962,9 +2157,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               <button
                 type="button"
                 onClick={() => handleCreateNewDraft('fresh')}
-                className="w-full text-left p-3.5 bg-slate-950 hover:bg-purple-950/40 border border-slate-800 hover:border-purple-600/80 rounded-xl transition group flex items-start gap-3 cursor-pointer"
+                className="w-full text-left p-3.5 bg-slate-50 hover:bg-purple-50 dark:bg-slate-950 dark:hover:bg-purple-950/40 border border-slate-200 hover:border-purple-500 dark:border-slate-800 dark:hover:border-purple-600/80 rounded-xl transition group flex items-start gap-3 cursor-pointer"
               >
-                <div className="w-8 h-8 rounded-lg bg-purple-950 border border-purple-700/60 flex items-center justify-center text-purple-300 shrink-0 group-hover:bg-purple-600 group-hover:text-white transition">
+                <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-700/60 flex items-center justify-center text-purple-600 dark:text-purple-300 shrink-0 group-hover:bg-purple-600 group-hover:text-white transition">
                   <Sparkles className="w-4 h-4" />
                 </div>
                 <div className="space-y-0.5">

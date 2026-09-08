@@ -170,38 +170,38 @@ Details: Sample raw interview details for ${template.title || 'legal draft'}.`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-150">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-800/50">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-150 text-slate-900 dark:text-white">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-5 h-5 text-indigo-400" />
+            <Sparkles className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
             <div>
-              <h3 className="font-semibold text-white">Extract Details & Auto-Populate Draft</h3>
-              <p className="text-xs text-indigo-300 font-medium">{activeTemplate?.title}</p>
+              <h3 className="font-semibold text-slate-900 dark:text-white">Extract Details & Auto-Populate Draft</h3>
+              <p className="text-xs text-indigo-600 dark:text-indigo-300 font-medium">{activeTemplate?.title}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+            className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 transition"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="p-6 space-y-4">
-          <p className="text-sm text-slate-400 leading-relaxed">
+          <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
             Paste raw lawyer interview notes, WhatsApp client details, or handwritten case summaries in Marathi or English. The AI Copilot will parse all party names, addresses, dates, marriage facts, and settlement terms into your form and document.
           </p>
 
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <label className="block text-xs font-semibold text-slate-300">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                 Raw Interview Notes / Key-Value Details
               </label>
               <button
                 type="button"
                 onClick={handleTransliterateNotesValues}
                 disabled={isTransliterating || !notes.trim()}
-                className="text-[11px] px-1.5 py-0.5 bg-indigo-950 hover:bg-indigo-900 disabled:opacity-40 text-indigo-300 border border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+                className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
                 title="Convert values (after ':') to Marathi Devanagari"
               >
                 {isTransliterating ? '...' : 'म'}
@@ -212,27 +212,27 @@ Details: Sample raw interview details for ${template.title || 'legal draft'}.`;
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={8}
-              className="w-full px-4 py-3 bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition font-marathi leading-relaxed"
+              className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition font-marathi leading-relaxed"
               placeholder="Enter raw notes here..."
             />
           </div>
         </div>
 
-        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-800 bg-slate-800/30">
+        <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/30">
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setNotes(getDefaultNotes(activeTemplate))}
-              className="text-xs text-indigo-400 hover:text-indigo-300 font-medium transition"
+              className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 font-medium transition"
               title="Reset notes to sample draft template details"
             >
               Load Sample Notes
             </button>
-            <span className="text-slate-700">|</span>
+            <span className="text-slate-300 dark:text-slate-700">|</span>
             <button
               type="button"
               onClick={() => setNotes('')}
-              className="text-xs text-slate-400 hover:text-white transition"
+              className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition"
             >
               Clear Text
             </button>
@@ -240,7 +240,7 @@ Details: Sample raw interview details for ${template.title || 'legal draft'}.`;
           <div className="flex items-center gap-3">
             <button
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              className="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800 transition"
             >
               Cancel
             </button>

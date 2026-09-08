@@ -26,6 +26,29 @@ export default function App() {
     return saved ? Number(saved) : 450;
   });
 
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = localStorage.getItem('juris_theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return 'light';
+  });
+
+  // Keep html class in sync with theme state
+  useEffect(() => {
+    localStorage.setItem('juris_theme', theme);
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+      root.classList.remove('light');
+    } else {
+      root.classList.add('light');
+      root.classList.remove('dark');
+    }
+  }, [theme]);
+
+  const handleToggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
   // Track the .copilotKitHeader DOM node for portal injection
   const [headerEl, setHeaderEl] = useState<Element | null>(null);
   const observerRef = useRef<MutationObserver | null>(null);
@@ -217,6 +240,8 @@ export default function App() {
             onSaveAdvocateName={handleSaveAdvocateName}
             isCopilotPinned={isCopilotPinned}
             onTogglePinCopilot={handleTogglePinCopilot}
+            theme={theme}
+            onToggleTheme={handleToggleTheme}
           />
         </CopilotSidebar>
 

@@ -4,7 +4,7 @@
 
 @layer base {
   body {
-    @apply bg-slate-900 text-slate-100 min-h-screen font-sans;
+    @apply bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100 min-h-screen font-sans transition-colors duration-200;
   }
 }
 
@@ -13,15 +13,61 @@
   width: 6px;
   height: 6px;
 }
-::-webkit-scrollbar-track {
+html.dark ::-webkit-scrollbar-track {
   background: #0f172a;
 }
-::-webkit-scrollbar-thumb {
+html.dark ::-webkit-scrollbar-thumb {
   background: #334155;
   border-radius: 3px;
 }
-::-webkit-scrollbar-thumb:hover {
+html.dark ::-webkit-scrollbar-thumb:hover {
   background: #475569;
+}
+html.light ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Light mode overrides for CopilotKit UI */
+html.light .copilotKitSidebar {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-left: 1px solid #e2e8f0 !important;
+}
+html.light .copilotKitHeader {
+  background-color: #f8fafc !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  color: #0f172a !important;
+}
+html.light .copilotKitTitle {
+  color: #0f172a !important;
+}
+html.light .copilotKitMessages {
+  background-color: #ffffff !important;
+}
+html.light .copilotKitInput {
+  background-color: #f8fafc !important;
+  border-top: 1px solid #e2e8f0 !important;
+  color: #0f172a !important;
+}
+html.light .copilotKitInputTextArea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+html.light .copilotKitUserMessage {
+  background-color: #e0e7ff !important;
+  color: #1e1b4b !important;
+}
+html.light .copilotKitAssistantMessage {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
 }
 
 /* ============================================================
@@ -62,29 +108,11 @@
 .document-page.paper-legal,
 .document-page:not(.paper-a4) {
   min-height: 1344px;
-  /* Subtle dotted line showing automatic page boundary based on paper height */
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0px,
-    transparent 1341px,
-    #cbd5e1 1342px,
-    transparent 1344px
-  );
-  background-size: 100% 1344px;
 }
 
 /* Paper Size: A4 (8.27" x 11.69") — 1122px at 96dpi */
 .document-page.paper-a4 {
   min-height: 1122px;
-  /* Subtle dotted line showing automatic page boundary based on paper height */
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0px,
-    transparent 1119px,
-    #cbd5e1 1120px,
-    transparent 1122px
-  );
-  background-size: 100% 1122px;
 }
 
 /* ============================================================
@@ -146,10 +174,69 @@ div.page-break::after {
   content: "PAGE BREAK — END OF LEGAL PAGE (8.5\" × 14\")";
 }
 
-.document-page.paper-a4 .page-break::after,
-.document-page.paper-a4 hr.page-break::after,
-.document-page.paper-a4 div.page-break::after {
-  content: "PAGE BREAK — END OF A4 PAGE (8.27\" × 11.69\")";
+html.light .page-break,
+html.light hr.page-break,
+html.light div.page-break {
+  background-color: #cbd5e1 !important;
+  border-top: 1px solid #94a3b8;
+  border-bottom: 1px solid #94a3b8;
+  box-shadow: 
+    inset 0 8px 12px -4px rgba(0, 0, 0, 0.1),
+    inset 0 -8px 12px -4px rgba(0, 0, 0, 0.1),
+    0 -4px 8px rgba(0, 0, 0, 0.08),
+    0 4px 8px rgba(0, 0, 0, 0.08);
+}
+
+html.light .page-break::after,
+html.light hr.page-break::after,
+html.light div.page-break::after {
+  background: #f1f5f9;
+  color: #4338ca;
+  border: 1px solid #818cf8;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.2);
+}
+
+/* ============================================================
+   DYNAMIC NATURAL PAGE BREAK INDICATOR (Simple dashed line)
+   Non-obscuring & 0px height — 100% visible & editable document text!
+   ============================================================ */
+.natural-page-indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none !important;
+  user-select: none !important;
+  z-index: 10;
+  height: 0 !important;
+  background: transparent !important;
+  border: none !important;
+}
+
+.natural-page-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: repeating-linear-gradient(
+    90deg,
+    #6366f1 0px,
+    #6366f1 8px,
+    transparent 8px,
+    transparent 14px
+  );
+  opacity: 0.8;
+  pointer-events: none !important;
+}
+
+html.light .natural-page-line {
+  background: repeating-linear-gradient(
+    90deg,
+    #4f46e5 0px,
+    #4f46e5 8px,
+    transparent 8px,
+    transparent 14px
+  );
+  opacity: 0.7;
 }
 
 /* Subtle court 1.5" left binding guideline (hidden during print) */
@@ -175,13 +262,17 @@ div.page-break::after {
    ============================================================ */
 @media print {
 
-  /* Default @page — A4 paper */
+  /* Default @page — A4 paper (Top 1", Bottom 1", Left 1.5", Right 1" on EVERY printed page) */
   @page {
     size: A4;
     margin-top: 1in;
     margin-bottom: 1in;
     margin-left: 1.5in;
     margin-right: 1in;
+    @top-left { content: "" !important; }
+    @top-right { content: "" !important; }
+    @bottom-left { content: "" !important; }
+    @bottom-right { content: "" !important; }
   }
 
   /* A4 @page (activated by body.paper-a4-print class) */
@@ -191,6 +282,10 @@ div.page-break::after {
     margin-bottom: 1in;
     margin-left: 1.5in;
     margin-right: 1in;
+    @top-left { content: "" !important; }
+    @top-right { content: "" !important; }
+    @bottom-left { content: "" !important; }
+    @bottom-right { content: "" !important; }
   }
 
   /* Legal @page explicit (activated by body.paper-legal-print class) */
@@ -200,6 +295,10 @@ div.page-break::after {
     margin-bottom: 1in;
     margin-left: 1.5in;
     margin-right: 1in;
+    @top-left { content: "" !important; }
+    @top-right { content: "" !important; }
+    @bottom-left { content: "" !important; }
+    @bottom-right { content: "" !important; }
   }
 
   /* Reset all layout scaffolding */
@@ -227,6 +326,8 @@ div.page-break::after {
 
   /* Hide all non-content UI elements */
   .no-print,
+  .natural-page-indicator,
+  .natural-page-line,
   .document-page::before,
   .copilotKitSidebar,
   .copilotKitButton,
@@ -241,16 +342,20 @@ div.page-break::after {
   [role="dialog"],
   [role="toolbar"] {
     display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    width: 0 !important;
   }
 
   /* Document page — remove screen-only decorations.
-     @page margins provide all spacing, so padding is zero. */
+     @page margins provide exact Top 1", Bottom 1", Left 1.5", Right 1" on EVERY printed page. */
   .document-page {
     background-image: none !important;
     background-color: white !important;
     box-shadow: none !important;
     margin: 0 !important;
     padding: 0 !important;
+    box-sizing: border-box !important;
     width: 100% !important;
     max-width: none !important;
     min-height: 0 !important;
@@ -289,13 +394,15 @@ div.page-break::after {
   }
 
   /* Page break elements — MUST come after generic div rule so it overrides display/break properties.
-     visibility: visible is required so Chromium print engine doesn't optimize it away. */
+     Explicit targeting prevents matching natural page indicators. */
   .page-break,
   hr.page-break,
   div.page-break,
-  [class*="page-break"],
-  [style*="page-break"],
-  [style*="break-after"] {
+  [data-page-break="true"],
+  [style*="break-after: page"],
+  [style*="break-after:page"],
+  [style*="page-break-after: always"],
+  [style*="page-break-after:always"] {
     display: block !important;
     clear: both !important;
     height: 0 !important;
@@ -307,6 +414,10 @@ div.page-break::after {
     outline: none !important;
     background: transparent !important;
     box-shadow: none !important;
+    color: transparent !important;
+    font-size: 0 !important;
+    line-height: 0 !important;
+    overflow: hidden !important;
     page-break-after: always !important;
     break-after: page !important;
     page-break-before: auto !important;
@@ -314,10 +425,23 @@ div.page-break::after {
     visibility: visible !important;
   }
 
+  .page-break *,
+  hr.page-break *,
+  div.page-break * {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    height: 0 !important;
+    width: 0 !important;
+    font-size: 0 !important;
+  }
+
   .page-break::after,
   hr.page-break::after,
   div.page-break::after {
     display: none !important;
+    visibility: hidden !important;
+    content: "" !important;
   }
 
   /* Prevent orphaned headings at page bottom */
