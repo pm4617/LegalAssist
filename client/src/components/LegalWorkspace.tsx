@@ -37,6 +37,7 @@ import {
   Indent,
   Outdent,
   Table,
+  Paintbrush,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
@@ -110,6 +111,15 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   // Live Document Preview Visual Rich Text Editor state & helpers
   const [docEditorMode, setDocEditorMode] = useState<'visual' | 'code'>('visual');
   const [paperSize, setPaperSize] = useState<'legal' | 'a4'>('a4');
+  const [copiedFormat, setCopiedFormat] = useState<{
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    fontSize?: string;
+    fontFamily?: string;
+    lineHeight?: string;
+    alignment?: string;
+  } | null>(null);
   const docRichEditorRef = useRef<HTMLDivElement>(null);
   const isSelfEditingRef = useRef<boolean>(false);
 
@@ -203,7 +213,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     if (docEditorMode === 'visual' && docRichEditorRef.current) {
       docRichEditorRef.current.focus();
       if (command === 'insertPageBreak') {
-        document.execCommand('insertHTML', false, '<div class="page-break"></div><p><br></p>');
+        const pbHtml = `<div class="page-break" style="page-break-after: always; break-after: page; border-top: 2px dashed #6366f1; margin: 16px 0; padding-top: 4px; text-align: center; color: #818cf8; font-size: 10px; font-weight: bold; font-family: monospace;">--- COURT PAGE BREAK ---</div><p><br></p>`;
+        document.execCommand('insertHTML', false, pbHtml);
       } else if (command === 'fontSizePt') {
         const pt = parseFloat(value);
         if (!isNaN(pt) && pt > 0) {
@@ -223,6 +234,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             if (parent) (parent as HTMLElement).style.fontSize = `${pt}pt`;
           }
         }
+      } else if (command === 'fontName') {
+        document.execCommand('fontName', false, value);
       } else if (command === 'increaseFontSize' || command === 'decreaseFontSize') {
         const delta = command === 'increaseFontSize' ? 1 : -1;
         const sel = window.getSelection();
@@ -277,6 +290,56 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         else if (value === 'right') document.execCommand('justifyRight');
         else if (value === 'left') document.execCommand('justifyLeft');
         else if (value === 'justify') document.execCommand('justifyFull');
+      } else if (command === 'copyFormat') {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const parent = sel.anchorNode?.parentElement;
+          if (parent) {
+            const comp = window.getComputedStyle(parent);
+            setCopiedFormat({
+              bold: document.queryCommandState('bold'),
+              italic: document.queryCommandState('italic'),
+              underline: document.queryCommandState('underline'),
+              fontSize: comp.fontSize ? `${Math.round(parseFloat(comp.fontSize) * 0.75)}pt` : undefined,
+              fontFamily: comp.fontFamily || undefined,
+              lineHeight: comp.lineHeight || undefined,
+              alignment: comp.textAlign || undefined,
+            });
+          }
+        }
+      } else if (command === 'applyFormat') {
+        if (copiedFormat) {
+          if (copiedFormat.bold !== undefined && document.queryCommandState('bold') !== copiedFormat.bold) {
+            document.execCommand('bold');
+          }
+          if (copiedFormat.italic !== undefined && document.queryCommandState('italic') !== copiedFormat.italic) {
+            document.execCommand('italic');
+          }
+          if (copiedFormat.underline !== undefined && document.queryCommandState('underline') !== copiedFormat.underline) {
+            document.execCommand('underline');
+          }
+          if (copiedFormat.fontSize) {
+            const pt = parseFloat(copiedFormat.fontSize);
+            if (!isNaN(pt)) {
+              const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
+              if (target) (target as HTMLElement).style.fontSize = `${pt}pt`;
+            }
+          }
+          if (copiedFormat.fontFamily) {
+            document.execCommand('fontName', false, copiedFormat.fontFamily);
+          }
+          if (copiedFormat.lineHeight) {
+            const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
+            if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+          }
+          if (copiedFormat.alignment) {
+            if (copiedFormat.alignment === 'center') document.execCommand('justifyCenter');
+            else if (copiedFormat.alignment === 'right') document.execCommand('justifyRight');
+            else if (copiedFormat.alignment === 'left') document.execCommand('justifyLeft');
+            else if (copiedFormat.alignment === 'justify') document.execCommand('justifyFull');
+          }
+          setCopiedFormat(null);
+        }
       } else {
         document.execCommand(command, false, value);
       }
@@ -957,6 +1020,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     }, 150);
   };
 
+
   // Sync default field values whenever selected template changes
   useEffect(() => {
     if (!activeTemplate?.fields) return;
@@ -1563,6 +1627,19 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                       title="Underline Selection (Ctrl+U)"
                     >
                       <Underline className="w-3.5 h-3.5" />
+                    </button>
+                    {/* Format Painter (🎨) */}
+                    <button
+                      onClick={() => handleDocExecCommand(copiedFormat ? 'applyFormat' : 'copyFormat')}
+                      className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition cursor-pointer ${
+                        copiedFormat
+                          ? 'bg-amber-500 text-black font-bold ring-2 ring-amber-300 animate-pulse'
+                          : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-700'
+                      }`}
+                      title={copiedFormat ? "Click to Apply Copied Formatting to Selected Text" : "Format Painter: Copy Formatting of Current Selection"}
+                    >
+                      <Paintbrush className="w-3.5 h-3.5 text-amber-400" />
+                      <span>{copiedFormat ? 'Apply Format' : 'Format Painter'}</span>
                     </button>
                     <div className="h-3 w-px bg-slate-700 mx-0.5" />
                     <button

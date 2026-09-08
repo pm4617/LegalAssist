@@ -33,6 +33,7 @@ import {
   Outdent,
   Table,
   Rows,
+  Paintbrush,
 } from 'lucide-react';
 import { LegalTemplate, FieldDefinition, TemplateCategory, TemplateLanguage } from '../types';
 import { convertToDevanagari } from '../utils/transliterate';
@@ -284,6 +285,16 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     }
   };
 
+  const [copiedFormat, setCopiedFormat] = useState<{
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    fontSize?: string;
+    fontFamily?: string;
+    lineHeight?: string;
+    alignment?: string;
+  } | null>(null);
+
   // Apply formatting to selection (supports visual contentEditable execCommand & code view textarea fallback)
   const handleExecCommand = (command: string, value: string = '', prefix: string = '', suffix: string = '') => {
     if (editorMode === 'visual' && richEditorRef.current) {
@@ -382,10 +393,58 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
       } else if (command === 'insertClause') {
         document.execCommand('insertText', false, value);
       } else if (command === 'insertPageBreak') {
-        // Insert EMPTY page-break div. The CSS ::after pseudo-element shows the visual "— PAGE BREAK —"
-        // label. No text inside the div ensures the docx exporter generates a real Word page break.
         const pbHtml = '<div class="page-break" style="page-break-after:always;break-after:page;"></div><p><br></p>';
         document.execCommand('insertHTML', false, pbHtml);
+      } else if (command === 'copyFormat') {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const parent = sel.anchorNode?.parentElement;
+          if (parent) {
+            const comp = window.getComputedStyle(parent);
+            setCopiedFormat({
+              bold: document.queryCommandState('bold'),
+              italic: document.queryCommandState('italic'),
+              underline: document.queryCommandState('underline'),
+              fontSize: comp.fontSize ? `${Math.round(parseFloat(comp.fontSize) * 0.75)}pt` : undefined,
+              fontFamily: comp.fontFamily || undefined,
+              lineHeight: comp.lineHeight || undefined,
+              alignment: comp.textAlign || undefined,
+            });
+          }
+        }
+      } else if (command === 'applyFormat') {
+        if (copiedFormat) {
+          if (copiedFormat.bold !== undefined && document.queryCommandState('bold') !== copiedFormat.bold) {
+            document.execCommand('bold');
+          }
+          if (copiedFormat.italic !== undefined && document.queryCommandState('italic') !== copiedFormat.italic) {
+            document.execCommand('italic');
+          }
+          if (copiedFormat.underline !== undefined && document.queryCommandState('underline') !== copiedFormat.underline) {
+            document.execCommand('underline');
+          }
+          if (copiedFormat.fontSize) {
+            const pt = parseFloat(copiedFormat.fontSize);
+            if (!isNaN(pt)) {
+              const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
+              if (target) (target as HTMLElement).style.fontSize = `${pt}pt`;
+            }
+          }
+          if (copiedFormat.fontFamily) {
+            document.execCommand('fontName', false, copiedFormat.fontFamily);
+          }
+          if (copiedFormat.lineHeight) {
+            const target = window.getSelection()?.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
+            if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+          }
+          if (copiedFormat.alignment) {
+            if (copiedFormat.alignment === 'center') document.execCommand('justifyCenter');
+            else if (copiedFormat.alignment === 'right') document.execCommand('justifyRight');
+            else if (copiedFormat.alignment === 'left') document.execCommand('justifyLeft');
+            else if (copiedFormat.alignment === 'justify') document.execCommand('justifyFull');
+          }
+          setCopiedFormat(null);
+        }
       }
       setTemplateText(richEditorRef.current.innerHTML);
     } else {
@@ -1096,6 +1155,20 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                         title="Underline"
                       >
                         <Underline className="w-4 h-4" />
+                      </button>
+                      {/* Format Painter (🎨) */}
+                      <button
+                        type="button"
+                        onClick={() => handleExecCommand(copiedFormat ? 'applyFormat' : 'copyFormat')}
+                        className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded font-medium transition cursor-pointer ${
+                          copiedFormat
+                            ? 'bg-amber-500 text-black font-bold ring-2 ring-amber-300 animate-pulse'
+                            : 'bg-slate-950 text-slate-300 hover:text-white border border-slate-700'
+                        }`}
+                        title={copiedFormat ? "Click to Apply Copied Formatting to Selected Text" : "Format Painter: Copy Formatting of Current Selection"}
+                      >
+                        <Paintbrush className="w-3.5 h-3.5 text-amber-400" />
+                        <span>{copiedFormat ? 'Apply Format' : 'Format Painter'}</span>
                       </button>
                       <button
                         type="button"

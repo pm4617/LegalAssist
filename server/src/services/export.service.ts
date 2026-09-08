@@ -8,6 +8,27 @@ export interface DocxExportOptions {
   content: string;
   isDevanagari?: boolean;
   paperSize?: 'a4' | 'legal';
+  defaultLineSpacing?: number;
+  defaultFontFamily?: string;
+  defaultFontSizePt?: number;
+}
+
+interface StyleState {
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  fontSize?: number;
+  fontFamily?: string;
+}
+
+interface HtmlBlock {
+  html: string;        // Inner HTML content of the block (for paragraphs)
+  openTag: string;     // Wrapper opening tag HTML (for inline style extraction)
+  tableHtml: string;   // Full raw HTML of a <table> element (for table blocks)
+  alignment: string;   // 'left' | 'right' | 'center' | 'justify' | ''
+  isPageBreak: boolean;
+  isHeading: boolean;
+  isTable: boolean;
 }
 
 function unescapeHtml(str: string): string {
@@ -24,7 +45,6 @@ function unescapeHtml(str: string): string {
 }
 
 function getParagraphAlignment(blockHtml: string, rawText: string): any {
-  // Explicit inline style alignment & tags & tailwind classes
   if (
     /style=["'][^"']*text-align:\s*center/i.test(blockHtml) ||
     /<center>/i.test(blockHtml) ||
@@ -58,12 +78,10 @@ function getParagraphAlignment(blockHtml: string, rawText: string): any {
     return AlignmentType.JUSTIFIED;
   }
 
-  // Markdown heading
   if (/^#+\s+/.test(rawText.trim())) {
     return AlignmentType.CENTER;
   }
 
-  // Automatic court petition header detection
   const clean = rawText.trim();
   if (
     (clean.includes('येथील') && (clean.includes('कोर्टात') || clean.includes('न्यायालय'))) ||
@@ -79,59 +97,27 @@ function getParagraphAlignment(blockHtml: string, rawText: string): any {
   return AlignmentType.JUSTIFIED;
 }
 
-interface StyleState {
-  bold: boolean;
-  italic: boolean;
-  underline: boolean;
-  fontSize?: number;
-  fontFamily?: string;
-}
-
-/**
- * Sanitize HTML that may contain multi-line or complex attributes (e.g. Word-style mso-* spans).
- * Runs on the FULL document string BEFORE block splitting so that no raw tag fragments
- * survive into individual block strings.
- *
- * Steps:
- *  1. Collapse all whitespace inside HTML tags (handles attributes spanning multiple lines)
- *  2. Remove non-content <span> elements: lang=, mso-*, AR-SA, Noto Sans etc.
- *  3. Promote meaningful inline styles (bold/italic/underline) to simple b/i/u tags
- *  4. Defensively strip any remaining unmatched < ... sequences (unclosed tags)
- */
 function sanitizeAndMarkupHtml(raw: string): string {
-  // Step 1: Collapse newlines / runs of whitespace INSIDE HTML tags.
-  // [^>]* does NOT need dotAll — it already matches \n since [^>] means "not >"
   let s = raw.replace(/<([^>]*)>/g, (_match, inner) => {
     const collapsed = inner.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
     return `<${collapsed}>`;
   });
 
-  // Step 2: Strip spans that carry ONLY Word/mso presentation info with no useful content role.
-  // These include: lang="AR-SA", lang="HI", mso-bidi-language, Noto Sans Devanagari, etc.
-  // Strategy: unwrap the span (keep inner text), then let the rest of the pipeline handle it.
   s = s
-    // Remove spans with lang attribute (AR-SA, HI, etc.) — unwrap inner content
     .replace(/<span[^>]*\blang=["'][^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '$1')
-    // Remove spans with only mso-* styles — unwrap inner content
     .replace(/<span[^>]*\bmso-[a-z-]+:[^>]*>([\s\S]*?)<\/span>/gi, '$1')
-    // Remove font-family spans that only set Noto / Mangal / Arial — unwrap inner content
     .replace(/<span[^>]*font-family:[^>]*>([\s\S]*?)<\/span>/gi, '$1');
 
-  // Step 3: Promote meaningful inline styles to semantic tags (BEFORE generic stripping)
   s = s
     .replace(/<span[^>]*font-weight:\s*bold[^>]*>([\s\S]*?)<\/span>/gi, '<b>$1</b>')
     .replace(/<span[^>]*font-style:\s*italic[^>]*>([\s\S]*?)<\/span>/gi, '<i>$1</i>')
     .replace(/<span[^>]*text-decoration:\s*underline[^>]*>([\s\S]*?)<\/span>/gi, '<u>$1</u>');
 
-  // Step 4: Strip any remaining orphan/unclosed tag-like sequences: < followed by non-> text
-  // that never closes (a sign of a tag that was truncated mid-attribute).
-  // We replace them with an empty string.
-  s = s.replace(/<[^>]*$/gm, '');   // remove tag fragment at end of a line with no closing >
-  s = s.replace(/^[^<]*>/gm, '');   // remove dangling > at start of a line (leftover close)
+  s = s.replace(/<[^>]*$/gm, '');
+  s = s.replace(/^[^<]*>/gm, '');
 
   return s;
 }
-
 
 function parseParagraphToTextRuns(
   blockHtml: string,
@@ -139,21 +125,14 @@ function parseParagraphToTextRuns(
   defaultFontSize: number
 ): TextRun[] {
   const runs: TextRun[] = [];
-
-  // 1. Unescape HTML entities
   const unescaped = unescapeHtml(blockHtml);
-
-  // 2. Sanitize: collapse multi-line attributes and promote mso-style formatting
   const sanitized = sanitizeAndMarkupHtml(unescaped);
-
-  // 3. Now tokenize safely — all tags are single-line after sanitization
   const tokens = sanitized.split(/(<[^>]+>)/g);
 
   const styleStack: StyleState[] = [{ bold: false, italic: false, underline: false }];
   let currentStyle: StyleState = { bold: false, italic: false, underline: false };
   let pendingBreak = 0;
 
-  // Plain text for heading detection (strip all tags cleanly after sanitization)
   const plainTextOnly = sanitized.replace(/<[^>]+>/g, '').trim();
   const isMdHeading = /^#+\s+/.test(plainTextOnly);
 
@@ -195,7 +174,7 @@ function parseParagraphToTextRuns(
           const unit = (sizeMatch[2] || 'pt').toLowerCase();
           if (!isNaN(val) && val > 0) {
             const pt = unit === 'px' ? val * 0.75 : val;
-            fontSize = Math.round(pt * 2); // convert pt to docx half-points
+            fontSize = Math.round(pt * 2);
           }
         }
 
@@ -218,7 +197,6 @@ function parseParagraphToTextRuns(
         currentStyle = styleStack[styleStack.length - 1];
       }
     } else {
-      // Text token — must not contain any angle brackets (residual from un-closed tags).
       let text = token.replace(/<[^>]*$/g, '').replace(/^[^<]*>/g, '');
 
       if (isMdHeading) {
@@ -246,7 +224,6 @@ function parseParagraphToTextRuns(
     runs.push(new TextRun({ text: '', font: defaultFont, size: defaultFontSize, break: pendingBreak }));
   }
 
-  // Fallback: if tokenizer produced nothing, use the stripped plain text
   if (runs.length === 0 && plainTextOnly.length > 0) {
     runs.push(new TextRun({ text: plainTextOnly, font: defaultFont, size: defaultFontSize }));
   }
@@ -254,10 +231,6 @@ function parseParagraphToTextRuns(
   return runs;
 }
 
-/**
- * Extract alignment from a block's opening tag attributes.
- * Handles: style="text-align: center", align="center", <center>, [center], class="text-center"
- */
 function getAlignmentFromTag(tagHtml: string): string | null {
   if (!tagHtml) return null;
   const h = tagHtml.toLowerCase();
@@ -288,22 +261,24 @@ function getAlignmentFromTag(tagHtml: string): string | null {
   return null;
 }
 
-/**
- * Structured block extracted from HTML — carries both content HTML and its resolved alignment.
- */
-interface HtmlBlock {
-  html: string;        // Inner HTML content of the block (for paragraphs)
-  openTag: string;     // Wrapper opening tag HTML (for inline style extraction)
-  tableHtml: string;   // Full raw HTML of a <table> element (for table blocks)
-  alignment: string;   // 'left' | 'right' | 'center' | 'justify' | ''
-  isPageBreak: boolean;
-  isHeading: boolean;
-  isTable: boolean;
+function isPageBreakString(str: string): boolean {
+  if (!str) return false;
+  const s = str.toLowerCase();
+  return (
+    s.includes('page-break') ||
+    s.includes('pagebreak') ||
+    s.includes('break-after:page') ||
+    s.includes('break-after: page') ||
+    s.includes('page-break-after:always') ||
+    s.includes('page-break-after: always') ||
+    s.includes('page-break-before:always') ||
+    s.includes('page-break-before: always') ||
+    s.includes('[page-break]') ||
+    s.includes('<!-- pagebreak -->') ||
+    s.includes('<!-- page-break -->')
+  );
 }
 
-/**
- * Structured block extraction from sanitized HTML content.
- */
 function extractBlocks(content: string): HtmlBlock[] {
   const html = (content || '').trim();
   if (!html) return [];
@@ -311,7 +286,6 @@ function extractBlocks(content: string): HtmlBlock[] {
   const hasBlockTags = /<(p|div|hr|h[1-6]|center|blockquote|table)[\s/>]/i.test(html) || isPageBreakString(html);
 
   if (!hasBlockTags) {
-    // Plain text / newline-separated
     return html.split(/\r?\n/).map((line) => {
       const isPB = isPageBreakString(line);
       return {
@@ -327,15 +301,12 @@ function extractBlocks(content: string): HtmlBlock[] {
   }
 
   const blocks: HtmlBlock[] = [];
-
-  // Match top-level block elements including <table>, <hr>, <p>, <div>, <h1-6>, <center>, <blockquote>
   const blockRe = /(<(table)([\s][^>]*)?>)([\s\S]*?)<\/table>|(<(p|div|hr|h[1-6]|center|blockquote)(\s[^>]*)?>)([\s\S]*?)<\/\6>|(<(?:hr|br|div|p)\s*\/?>)|([^<]+(?:<(?!\/?(p|div|hr|h[1-6]|center|blockquote|table)[\s/>])[^>]*>[^<]*)*)/gi;
 
   let match: RegExpExecArray | null;
 
   while ((match = blockRe.exec(html)) !== null) {
     if (match[1] && match[2]?.toLowerCase() === 'table') {
-      // TABLE BLOCK
       const fullTableHtml = match[1] + (match[4] || '') + '</table>';
       blocks.push({
         html: '', openTag: match[1], tableHtml: fullTableHtml,
@@ -343,7 +314,6 @@ function extractBlocks(content: string): HtmlBlock[] {
       });
 
     } else if (match[5]) {
-      // PARAGRAPH / DIV / HR / HEADING / BLOCKQUOTE
       const openTag = match[5];
       const tagName = (match[6] || '').toLowerCase();
       const innerHtml = match[8] || '';
@@ -366,7 +336,6 @@ function extractBlocks(content: string): HtmlBlock[] {
       blocks.push({ html: innerHtml, openTag, tableHtml: '', alignment, isPageBreak: false, isHeading, isTable: false });
 
     } else if (match[9]) {
-      // Self-closing <hr/> or <br/>
       const selfTag = match[9];
       if (isPageBreakString(selfTag) || /^<hr/i.test(selfTag)) {
         blocks.push({ html: '', openTag: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
@@ -375,7 +344,6 @@ function extractBlocks(content: string): HtmlBlock[] {
       }
 
     } else if (match[10]) {
-      // Raw text between blocks
       const raw = match[10].trim();
       if (raw) {
         if (isPageBreakString(raw)) {
@@ -402,11 +370,47 @@ function extractBlocks(content: string): HtmlBlock[] {
   return blocks;
 }
 
-/**
- * Extract line spacing from block opening tag or inner HTML style attributes.
- * Returns dxa value for docx LineRuleType.AUTO (240 = 1.0x line spacing).
- */
-function getParagraphLineSpacing(openTag: string, innerHtml: string): number {
+function extractDocumentGlobals(content: string, isDevanagari: boolean, options: DocxExportOptions) {
+  let docLineSpacing = options.defaultLineSpacing || 240; // 240 = 1.0x line spacing
+  let docFontFamily = options.defaultFontFamily || (isDevanagari ? 'Mangal' : 'Times New Roman');
+  let docFontSize = options.defaultFontSizePt ? Math.round(options.defaultFontSizePt * 2) : 24; // 24 half-points = 12pt
+
+  const rootStyleMatch = /^(?:<div|<body|<section|<article)[^>]*style=["']([^"']+)["']/i.exec((content || '').trim());
+  if (rootStyleMatch && rootStyleMatch[1]) {
+    const styles = rootStyleMatch[1];
+    
+    const lhMatch = /line-height:\s*([\d.]+)(pt|px|%)?/i.exec(styles);
+    if (lhMatch) {
+      const val = parseFloat(lhMatch[1]);
+      const unit = (lhMatch[2] || '').toLowerCase();
+      if (!isNaN(val) && val > 0) {
+        if (unit === '%') docLineSpacing = Math.round((val / 100) * 240);
+        else if (unit === 'pt') docLineSpacing = Math.round((val / 12) * 240);
+        else if (unit === 'px') docLineSpacing = Math.round(((val * 0.75) / 12) * 240);
+        else docLineSpacing = Math.round(val * 240);
+      }
+    }
+
+    const ffMatch = /font-family:\s*['"]?([^;'"]+)['"]?/i.exec(styles);
+    if (ffMatch && ffMatch[1]) {
+      docFontFamily = ffMatch[1].trim();
+    }
+
+    const fsMatch = /font-size:\s*([\d.]+)(pt|px)?/i.exec(styles);
+    if (fsMatch) {
+      const val = parseFloat(fsMatch[1]);
+      const unit = (fsMatch[2] || 'pt').toLowerCase();
+      if (!isNaN(val) && val > 0) {
+        const pt = unit === 'px' ? val * 0.75 : val;
+        docFontSize = Math.round(pt * 2);
+      }
+    }
+  }
+
+  return { docLineSpacing, docFontFamily, docFontSize };
+}
+
+function getParagraphLineSpacing(openTag: string, innerHtml: string, fallbackDxa: number = 240): number {
   const combined = (openTag || '') + ' ' + (innerHtml || '');
   const match = /line-height:\s*([\d.]+)(pt|px|%)?/i.exec(combined);
   if (match) {
@@ -420,21 +424,17 @@ function getParagraphLineSpacing(openTag: string, innerHtml: string): number {
       } else if (unit === 'px') {
         return Math.round(((val * 0.75) / 12) * 240);
       } else {
-        // Multiplier value e.g. 1.0, 1.15, 1.5, 1.6, 2.0
         return Math.round(val * 240);
       }
     }
   }
-  return 240; // Default 1.0x line spacing
+  return fallbackDxa;
 }
 
-/**
- * Extract paragraph top and bottom margin spacing in dxa (1pt = 20 dxa).
- */
 function getParagraphMarginSpacing(openTag: string, innerHtml: string): { before: number; after: number } {
   const combined = (openTag || '') + ' ' + (innerHtml || '');
   let before = 0;
-  let after = 120; // Default 6pt gap after paragraph
+  let after = 120;
 
   const marginTopMatch = /margin-top:\s*([\d.]+)(pt|px)?/i.exec(combined);
   if (marginTopMatch) {
@@ -459,9 +459,6 @@ function getParagraphMarginSpacing(openTag: string, innerHtml: string): { before
   return { before, after };
 }
 
-/**
- * Extract left indentation in dxa (1pt = 20 dxa).
- */
 function getParagraphIndent(openTag: string, innerHtml: string): number | undefined {
   const combined = (openTag || '') + ' ' + (innerHtml || '');
   const match = /(?:margin-left|padding-left):\s*([\d.]+)(pt|px|in|cm)?/i.exec(combined);
@@ -478,43 +475,14 @@ function getParagraphIndent(openTag: string, innerHtml: string): number | undefi
   return undefined;
 }
 
-/**
- * Check if a string snippet contains any page break indicator tag, class, style, or marker.
- */
-function isPageBreakString(str: string): boolean {
-  if (!str) return false;
-  const s = str.toLowerCase();
-  return (
-    s.includes('page-break') ||
-    s.includes('pagebreak') ||
-    s.includes('break-after:page') ||
-    s.includes('break-after: page') ||
-    s.includes('page-break-after:always') ||
-    s.includes('page-break-after: always') ||
-    s.includes('page-break-before:always') ||
-    s.includes('page-break-before: always') ||
-    s.includes('[page-break]') ||
-    s.includes('<!-- pagebreak -->') ||
-    s.includes('<!-- page-break -->')
-  );
-}
-
-/**
- * Parse an HTML <table> string into a docx Table object.
- * Handles <thead>, <tbody>, <tr>, <th>, <td>.
- */
 function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSize: number): Table {
   const rows: TableRow[] = [];
-
-  // Extract all <tr> elements (greedy-safe since we work on a single table's HTML)
   const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   let trMatch: RegExpExecArray | null;
 
   while ((trMatch = trRe.exec(tableHtml)) !== null) {
     const trInner = trMatch[1] || '';
     const cells: TableCell[] = [];
-
-    // Extract <th> and <td> cells
     const cellRe = /<(th|td)([^>]*)>([\s\S]*?)<\/\1>/gi;
     let cellMatch: RegExpExecArray | null;
 
@@ -523,15 +491,12 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
       const cellAttrs = cellMatch[2] || '';
       const cellInner = cellMatch[3] || '';
 
-      // colspan support
       const colspanMatch = /colspan=["']?(\d+)["']?/i.exec(cellAttrs);
       const colspan = colspanMatch ? parseInt(colspanMatch[1], 10) : 1;
 
-      // rowspan support
       const rowspanMatch = /rowspan=["']?(\d+)["']?/i.exec(cellAttrs);
       const rowspan = rowspanMatch ? parseInt(rowspanMatch[1], 10) : 1;
 
-      // Cell alignment
       const cellAlignRaw = getAlignmentFromTag(`<td${cellAttrs}>`);
       const cellAlign =
         cellAlignRaw === 'center' ? AlignmentType.CENTER :
@@ -539,13 +504,11 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
         cellAlignRaw === 'justify' ? AlignmentType.JUSTIFIED :
         AlignmentType.LEFT;
 
-      // Parse cell content as text runs
       const plainCellText = unescapeHtml(cellInner.replace(/<[^>]+>/g, '')).trim();
       const cellRuns = plainCellText
         ? parseParagraphToTextRuns(cellInner, defaultFont, defaultFontSize)
         : [new TextRun({ text: '', font: defaultFont, size: defaultFontSize })];
 
-      // Bold for header cells
       if (isHeader) {
         cellRuns.forEach((r: any) => { if (r._data) r._data.bold = true; });
       }
@@ -589,55 +552,49 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
 export class ExportService {
   async generateDocx(options: DocxExportOptions): Promise<Buffer> {
     const { content, isDevanagari = false, paperSize = 'a4' } = options;
-    const defaultFont = isDevanagari ? 'Mangal' : 'Times New Roman';
-    const defaultFontSize = 24; // 12pt (docx uses half-points: 24 = 12pt)
+    const globals = extractDocumentGlobals(content, isDevanagari, options);
+    const defaultFont = globals.docFontFamily;
+    const defaultFontSize = globals.docFontSize;
+    const defaultLineSpacing = globals.docLineSpacing;
 
     const pageSize =
       paperSize === 'a4'
         ? { width: 11906, height: 16838 } // A4: 210mm x 297mm
         : { width: 12240, height: 20160 }; // Legal: 8.5" x 14.0"
 
-    // Sanitize BEFORE splitting into blocks
     const sanitizedContent = sanitizeAndMarkupHtml(unescapeHtml(content || ''));
-
     const blocks = extractBlocks(sanitizedContent);
     const children: (Paragraph | Table)[] = [];
 
     for (const block of blocks) {
-      // Page Break
       if (block.isPageBreak) {
         children.push(new Paragraph({ children: [new PageBreak()] }));
         continue;
       }
 
-      // Table block
       if (block.isTable) {
         try {
           const table = parseTableToDocx(block.tableHtml, defaultFont, defaultFontSize);
           children.push(table);
-          // Add a small empty paragraph after table for spacing
           children.push(new Paragraph({
-            spacing: { before: 0, after: 60, line: 240, lineRule: LineRuleType.AUTO },
+            spacing: { before: 0, after: 60, line: defaultLineSpacing, lineRule: LineRuleType.AUTO },
             children: [new TextRun({ text: '', font: defaultFont, size: defaultFontSize })],
           }));
         } catch {
-          // If table parse fails, skip silently
         }
         continue;
       }
 
       const plainText = unescapeHtml(block.html.replace(/<[^>]+>/g, '')).trim();
 
-      // Empty paragraph (spacing)
       if (!plainText) {
         children.push(new Paragraph({
-          spacing: { before: 0, after: 0, line: 240, lineRule: LineRuleType.AUTO },
+          spacing: { before: 0, after: 0, line: defaultLineSpacing, lineRule: LineRuleType.AUTO },
           children: [new TextRun({ text: '', font: defaultFont, size: defaultFontSize })],
         }));
         continue;
       }
 
-      // Determine alignment: block metadata → style detection → heuristics
       let alignment: any;
       if (block.alignment === 'center') {
         alignment = AlignmentType.CENTER;
@@ -652,7 +609,7 @@ export class ExportService {
       }
 
       const { before, after } = getParagraphMarginSpacing(block.openTag, block.html);
-      const lineSpacing = getParagraphLineSpacing(block.openTag, block.html);
+      const lineSpacing = getParagraphLineSpacing(block.openTag, block.html, defaultLineSpacing);
       const indentLeft = getParagraphIndent(block.openTag, block.html);
       const runs = parseParagraphToTextRuns(block.html, defaultFont, defaultFontSize);
 
@@ -670,16 +627,33 @@ export class ExportService {
     }
 
     const doc = new Document({
+      styles: {
+        default: {
+          document: {
+            run: {
+              font: defaultFont,
+              size: defaultFontSize,
+            },
+            paragraph: {
+              spacing: {
+                line: defaultLineSpacing,
+                lineRule: LineRuleType.AUTO,
+                after: 120,
+              },
+            },
+          },
+        },
+      },
       sections: [
         {
           properties: {
             page: {
               size: pageSize,
               margin: {
-                top: 1440,    // 1.0 inch — Top
-                bottom: 1440, // 1.0 inch — Bottom
-                left: 2160,   // 1.5 inch — Left (Court binding side)
-                right: 1440,  // 1.0 inch — Right
+                top: 1440,    // 1.0 inch
+                bottom: 1440, // 1.0 inch
+                left: 2160,   // 1.5 inch (Court binding)
+                right: 1440,  // 1.0 inch
               },
             },
           },
@@ -693,5 +667,3 @@ export class ExportService {
 }
 
 export const exportService = new ExportService();
-
-
