@@ -40,6 +40,12 @@ import {
   Paintbrush,
   Sun,
   Moon,
+  Monitor,
+  Tablet,
+  Smartphone,
+  Sliders,
+  PanelLeft,
+  Menu,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
@@ -83,6 +89,40 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
   const [transliteratingField, setTransliteratingField] = useState<string | null>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
+
+  // Dedicated Device Layout Mode state ('auto' | 'desktop' | 'tablet' | 'mobile')
+  const [deviceMode, setDeviceMode] = useState<'auto' | 'desktop' | 'tablet' | 'mobile'>(() => {
+    return (localStorage.getItem('juris_device_mode') as any) || 'auto';
+  });
+
+  // Track window dimensions for auto responsiveness
+  const [windowWidth, setWindowWidth] = useState<number>(() =>
+    typeof window !== 'undefined' ? window.innerWidth : 1200
+  );
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('juris_device_mode', deviceMode);
+  }, [deviceMode]);
+
+  // Compute effective layout mode
+  const effectiveDevice = useMemo(() => {
+    if (deviceMode !== 'auto') return deviceMode;
+    if (windowWidth < 768) return 'mobile';
+    if (windowWidth < 1024) return 'tablet';
+    return 'desktop';
+  }, [deviceMode, windowWidth]);
+
+  // Active tab for Tablet/Mobile touch view ('form' | 'canvas')
+  const [tabletTab, setTabletTab] = useState<'form' | 'canvas'>('canvas');
+
+  // Slide-over Form Drawer state for Tablet/Mobile modes
+  const [isTabletDrawerOpen, setIsTabletDrawerOpen] = useState<boolean>(false);
 
   // Resizable Form Wizard Pane state & handler
   const [formPaneWidth, setFormPaneWidth] = useState<number>(() => {
@@ -1250,18 +1290,25 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
   const renderField = (field: any) => {
     const value = facts[field.key] ?? (field.defaultValue ?? '');
+    const isTouchDevice = effectiveDevice === 'tablet' || effectiveDevice === 'mobile';
+    const inputPaddingClass = isTouchDevice ? 'px-3 py-2 text-sm min-h-[44px]' : 'px-2.5 py-1.5 text-xs';
+    const transliterateBtnClass = isTouchDevice
+      ? 'text-xs px-2.5 py-1 min-h-[34px] min-w-[34px] flex items-center justify-center font-bold'
+      : 'text-[11px] px-1.5 py-0.5';
 
     if (field.type === 'boolean') {
       return (
-        <div key={field.key} className="flex items-center gap-2 py-1">
+        <div key={field.key} className={`flex items-center gap-2.5 ${isTouchDevice ? 'py-2 min-h-[44px]' : 'py-1'}`}>
           <input
             type="checkbox"
             id={field.key}
             checked={Boolean(value)}
             onChange={(e) => handleFactChange(field.key, e.target.checked)}
-            className="rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+            className={`rounded border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-indigo-600 focus:ring-indigo-500 cursor-pointer ${
+              isTouchDevice ? 'w-5 h-5' : 'w-4 h-4'
+            }`}
           />
-          <label htmlFor={field.key} className="text-xs text-slate-700 dark:text-slate-300 font-medium cursor-pointer select-none">
+          <label htmlFor={field.key} className={`${isTouchDevice ? 'text-sm' : 'text-xs'} text-slate-700 dark:text-slate-300 font-medium cursor-pointer select-none`}>
             {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-400 font-marathi">({field.labelMr})</span>}
           </label>
         </div>
@@ -1276,14 +1323,14 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
       return (
         <div key={field.key}>
-          <label className="text-[11px] text-slate-600 dark:text-slate-400 block mb-1 font-medium">
+          <label className={`${isTouchDevice ? 'text-xs mb-1.5' : 'text-[11px] mb-1'} text-slate-600 dark:text-slate-400 block font-medium`}>
             {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
             {field.required && <span className="text-rose-500 ml-0.5">*</span>}
           </label>
           <select
             value={value}
             onChange={(e) => handleFactChange(field.key, e.target.value)}
-            className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 font-marathi"
+            className={`w-full ${inputPaddingClass} bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white focus:ring-1 focus:ring-indigo-500 font-marathi`}
           >
             {(!value || opts.length === 0) && <option value="">-- पर्याय निवडा (Select Option) --</option>}
             {opts.map((opt: any, oIdx: number) => (
@@ -1300,7 +1347,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       return (
         <div key={field.key}>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+            <label className={`${isTouchDevice ? 'text-xs' : 'text-[11px]'} text-slate-600 dark:text-slate-400 font-medium`}>
               {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
               {field.required && <span className="text-rose-500 ml-0.5">*</span>}
             </label>
@@ -1308,18 +1355,18 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               type="button"
               onClick={() => handleTransliterateField(field.key, value)}
               disabled={transliteratingField === field.key || !value}
-              className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+              className={`${transliterateBtnClass} bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-marathi shadow-sm transition cursor-pointer`}
               title="Convert English text to Marathi Devanagari (मराठीत रुपांतर करा)"
             >
               {transliteratingField === field.key ? '...' : 'म'}
             </button>
           </div>
           <textarea
-            rows={2}
+            rows={isTouchDevice ? 3 : 2}
             value={value}
             onChange={(e) => handleFactChange(field.key, e.target.value)}
             placeholder={field.placeholder || ''}
-            className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
+            className={`w-full ${inputPaddingClass} bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi`}
           />
         </div>
       );
@@ -1332,7 +1379,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       return (
         <div key={field.key}>
           <div className="flex items-center justify-between mb-1">
-            <label className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+            <label className={`${isTouchDevice ? 'text-xs' : 'text-[11px]'} text-slate-600 dark:text-slate-400 font-medium`}>
               {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
               {field.required && <span className="text-rose-500 ml-0.5">*</span>}
             </label>
@@ -1341,7 +1388,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                 type="button"
                 onClick={() => handleTransliterateField(field.key, value)}
                 disabled={transliteratingField === field.key || !value}
-                className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+                className={`${transliterateBtnClass} bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-marathi shadow-sm transition cursor-pointer`}
                 title="Convert Date text to Marathi Devanagari numerals (मराठीत रुपांतर करा)"
               >
                 {transliteratingField === field.key ? '...' : 'म'}
@@ -1355,10 +1402,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
               value={displayVal}
               onChange={(e) => handleFactChange(field.key, e.target.value)}
               placeholder="DD/MM/YYYY (उदा. 03/09/2026)"
-              className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
+              className={`w-full ${inputPaddingClass} bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi`}
             />
             <div className="absolute right-2.5 pointer-events-none text-slate-400">
-              <Calendar className="w-3.5 h-3.5" />
+              <Calendar className={`${isTouchDevice ? 'w-4 h-4' : 'w-3.5 h-3.5'}`} />
             </div>
             <input
               type="date"
@@ -1369,7 +1416,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                   handleFactChange(field.key, formatted);
                 }
               }}
-              className="absolute right-1 w-7 h-7 opacity-0 cursor-pointer"
+              className="absolute right-1 w-8 h-8 opacity-0 cursor-pointer"
               title="Select Date from Calendar"
             />
           </div>
@@ -1380,7 +1427,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     return (
       <div key={field.key}>
         <div className="flex items-center justify-between mb-1">
-          <label className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
+          <label className={`${isTouchDevice ? 'text-xs' : 'text-[11px]'} text-slate-600 dark:text-slate-400 font-medium`}>
             {field.label} {field.labelMr && <span className="text-slate-500 dark:text-slate-500 font-marathi">({field.labelMr})</span>}
             {field.required && <span className="text-rose-500 ml-0.5">*</span>}
           </label>
@@ -1388,7 +1435,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             type="button"
             onClick={() => handleTransliterateField(field.key, value)}
             disabled={transliteratingField === field.key || !value}
-            className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+            className={`${transliterateBtnClass} bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-marathi shadow-sm transition cursor-pointer`}
             title="Convert English text to Marathi Devanagari (मराठीत रुपांतर करा)"
           >
             {transliteratingField === field.key ? '...' : 'म'}
@@ -1399,7 +1446,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           value={value}
           onChange={(e) => handleFactChange(field.key, e.target.value)}
           placeholder={field.placeholder || ''}
-          className="w-full px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi"
+          className={`w-full ${inputPaddingClass} bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-1 focus:ring-indigo-500 font-marathi`}
         />
       </div>
     );
@@ -1446,33 +1493,90 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
         {/* Right Actions */}
         <div className="flex items-center gap-2">
-          {/* View Mode Toggle (Mobile / Desktop) */}
-          <div className="hidden md:flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-300 dark:border-slate-700 text-xs">
+          {/* Device Mode Switcher (PC / Desktop, Tablet, Mobile, Auto) */}
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800/90 p-1 rounded-xl border border-slate-300 dark:border-slate-700/80 text-xs shadow-inner">
             <button
-              onClick={() => setViewMode('split')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'split' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+              onClick={() => setDeviceMode('desktop')}
+              className={`px-2.5 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition ${
+                deviceMode === 'desktop'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
+              title="PC / Desktop Mode (Side-by-side Resizable Split View)"
             >
-              Split View
+              <Monitor className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">PC / Desktop</span>
             </button>
+
             <button
-              onClick={() => setViewMode('form')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'form' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+              onClick={() => setDeviceMode('tablet')}
+              className={`px-2.5 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition ${
+                deviceMode === 'tablet'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
+              title="Tablet Mode (Touch-friendly 44px targets, Segmented Switcher & Slide-over Drawer)"
             >
-              Form Wizard
+              <Tablet className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Tablet</span>
             </button>
+
             <button
-              onClick={() => setViewMode('preview')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition ${
-                viewMode === 'preview' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+              onClick={() => setDeviceMode('mobile')}
+              className={`px-2.5 py-1.5 rounded-lg font-medium flex items-center gap-1.5 transition ${
+                deviceMode === 'mobile'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
               }`}
+              title="Mobile Mode (Compact 1-Column Touch Layout)"
             >
-              Draft Preview
+              <Smartphone className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Mobile</span>
+            </button>
+
+            <button
+              onClick={() => setDeviceMode('auto')}
+              className={`px-2 py-1.5 rounded-lg font-medium flex items-center gap-1 transition ${
+                deviceMode === 'auto'
+                  ? 'bg-slate-200 dark:bg-slate-700 text-indigo-700 dark:text-indigo-300 shadow-sm font-semibold'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+              }`}
+              title={`Auto Responsive Sensing (Active: ${effectiveDevice.toUpperCase()})`}
+            >
+              <Sliders className="w-3 h-3 text-indigo-500" />
+              <span className="text-[10px] uppercase font-bold tracking-wider">Auto</span>
             </button>
           </div>
+
+          {/* Desktop Sub-View Mode Toggle (Split / Form / Preview) */}
+          {effectiveDevice === 'desktop' && (
+            <div className="hidden xl:flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-300 dark:border-slate-700 text-xs">
+              <button
+                onClick={() => setViewMode('split')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                  viewMode === 'split' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                }`}
+              >
+                Split View
+              </button>
+              <button
+                onClick={() => setViewMode('form')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                  viewMode === 'form' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                }`}
+              >
+                Form Wizard
+              </button>
+              <button
+                onClick={() => setViewMode('preview')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                  viewMode === 'preview' ? 'bg-indigo-600 text-white shadow' : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                }`}
+              >
+                Draft Preview
+              </button>
+            </div>
+          )}
 
           {/* Quick AI Extract Notes */}
           <button
@@ -1539,14 +1643,55 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         </div>
       </header>
 
+      {/* Touch-optimized Segmented Navigation Bar for Tablet & Mobile Modes */}
+      {(effectiveDevice === 'tablet' || effectiveDevice === 'mobile') && (
+        <div className="no-print bg-slate-900 border-b border-slate-800 px-3 py-2 flex items-center justify-between shrink-0 z-20 gap-2">
+          <div className="flex items-center gap-1 bg-slate-800 p-1 rounded-xl w-full max-w-md border border-slate-700">
+            <button
+              onClick={() => setTabletTab('form')}
+              className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition min-h-[40px] ${
+                tabletTab === 'form'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-700'
+              }`}
+            >
+              <FolderEdit className="w-4 h-4" />
+              <span>Client Form Fields</span>
+            </button>
+
+            <button
+              onClick={() => setTabletTab('canvas')}
+              className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition min-h-[40px] ${
+                tabletTab === 'canvas'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-700'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              <span>Document Canvas</span>
+            </button>
+          </div>
+
+          <button
+            onClick={() => setIsTabletDrawerOpen(true)}
+            className="px-3.5 py-2 bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-700/80 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow min-h-[40px] shrink-0 cursor-pointer"
+            title="Open Slide-Over Client Form Drawer"
+          >
+            <PanelLeft className="w-4 h-4 text-indigo-400" />
+            <span className="hidden sm:inline">Form Drawer</span>
+          </button>
+        </div>
+      )}
+
       {/* Main Drafting Workspace Layout */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Column: Client & Case Facts Wizard */}
-        {(viewMode === 'split' || viewMode === 'form') && (
+        {((effectiveDevice === 'desktop' && (viewMode === 'split' || viewMode === 'form')) ||
+          ((effectiveDevice === 'tablet' || effectiveDevice === 'mobile') && tabletTab === 'form')) && (
           <div
-            style={viewMode === 'split' ? { width: `${formPaneWidth}px` } : undefined}
+            style={effectiveDevice === 'desktop' && viewMode === 'split' ? { width: `${formPaneWidth}px` } : undefined}
             className={`no-print border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 overflow-y-auto ${
-              viewMode === 'form' ? 'w-full max-w-4xl mx-auto' : 'shrink-0'
+              effectiveDevice !== 'desktop' || viewMode === 'form' ? 'w-full max-w-4xl mx-auto' : 'shrink-0'
             }`}
           >
             <div className="p-4 sm:p-5 space-y-6">
@@ -1656,7 +1801,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         )}
 
         {/* Draggable Splitter handle for Form Wizard vs Draft Preview */}
-        {viewMode === 'split' && (
+        {effectiveDevice === 'desktop' && viewMode === 'split' && (
           <div
             onMouseDown={handleMouseDownFormResize}
             className="no-print w-2 hover:w-2 bg-slate-800 hover:bg-indigo-500/50 cursor-col-resize z-20 flex items-center justify-center group transition-colors shrink-0"
@@ -1667,7 +1812,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         )}
 
         {/* Center / Right Column: Live Legal Document Draft & Editor */}
-        {(viewMode === 'split' || viewMode === 'preview') && (
+        {((effectiveDevice === 'desktop' && (viewMode === 'split' || viewMode === 'preview')) ||
+          ((effectiveDevice === 'tablet' || effectiveDevice === 'mobile') && tabletTab === 'canvas')) && (
           <div className="flex-1 flex flex-col bg-slate-100 dark:bg-slate-950 overflow-hidden relative">
             {/* Document Action Toolbar */}
             <div className="no-print border-b border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900/60 px-4 py-2 flex flex-wrap items-center justify-between gap-2 shrink-0">
@@ -2110,6 +2256,88 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         onTemplatesChanged={reloadTemplates}
         onSelectTemplate={(tmplId) => setSelectedTemplateId(tmplId)}
       />
+
+      {/* SLIDE-OVER CLIENT FORM DRAWER FOR TABLET / MOBILE MODE */}
+      {isTabletDrawerOpen && (
+        <div className="fixed inset-0 z-50 flex justify-start bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 no-print">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-md h-full border-r border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden">
+            <div className="p-4 bg-indigo-600 dark:bg-indigo-700 text-white flex items-center justify-between shadow">
+              <div className="flex items-center gap-2">
+                <PanelLeft className="w-5 h-5" />
+                <h3 className="font-bold text-sm sm:text-base">Client & Case Particulars Drawer</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTabletDrawerOpen(false)}
+                className="p-1.5 hover:bg-indigo-700 dark:hover:bg-indigo-800 rounded-lg text-white transition cursor-pointer"
+                title="Close Drawer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-indigo-900 dark:text-indigo-200">Active Template</p>
+                  <p className="text-xs text-indigo-700 dark:text-indigo-300 font-medium">{activeTemplate?.title}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsTabletDrawerOpen(false);
+                    setIsNotesModalOpen(true);
+                  }}
+                  className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" /> Notes
+                </button>
+              </div>
+
+              {fieldGroups.length > 0 ? (
+                fieldGroups.map((group) => {
+                  const header = getGroupHeader(group.key);
+                  return (
+                    <div
+                      key={`drawer-${group.key}`}
+                      className="space-y-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
+                    >
+                      <div className="flex items-center justify-between">
+                        <h5 className={`text-xs font-bold ${header.color}`}>
+                          {header.title}
+                        </h5>
+                        {header.titleMr && (
+                          <span className="text-[11px] text-slate-500 font-marathi">
+                            {header.titleMr}
+                          </span>
+                        )}
+                      </div>
+                      <div className="space-y-3">
+                        {group.fields.map((field: any) => renderField(field))}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="p-4 rounded-xl bg-slate-100 dark:bg-slate-800/40 text-center text-xs text-slate-500">
+                  No custom form fields for this template.
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 bg-slate-100 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <span className="text-xs text-slate-500 dark:text-slate-400">Updates draft real-time</span>
+              <button
+                type="button"
+                onClick={() => setIsTabletDrawerOpen(false)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow cursor-pointer"
+              >
+                Done Editing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* NEW DOCUMENT DRAFT MODAL */}
       {isNewDraftModalOpen && (
