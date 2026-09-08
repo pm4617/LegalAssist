@@ -434,7 +434,7 @@ app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/a
         emit('TEXT_MESSAGE_END', { message_id: msgId, messageId: msgId, id: msgId, specificationVersion: 'v1' });
 
         const actionExecId = `exec_${Date.now()}`;
-        
+
         // AG-UI Action Execution Protocol
         emit('ACTION_EXECUTION_START', {
           action_execution_id: actionExecId,
@@ -519,3 +519,5 @@ app.listen(PORT, () => {
   console.log(`🤖 Copilot Endpoint: http://localhost:${PORT}/api/copilot`);
   console.log(`====================================================`);
 });
+
+export default app;
