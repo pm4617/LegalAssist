@@ -1,30 +1,93 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { TEMPLATES } from '../templates/registry.js';
 import { LegalTemplate } from '../types/index.js';
 
-const DATA_FILE = path.join(__dirname, '../../data/custom-templates.json');
-
 class TemplateStore {
-  private ensureDataFile(): void {
-    const dir = path.dirname(DATA_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, '[]', 'utf8');
+  private inMemoryCache: LegalTemplate[] | null = null;
+
+  private getStoragePath(): string {
+    if (process.env.VERCEL) {
+      return path.join(os.tmpdir(), 'custom-templates.json');
+    }
+    return path.join(__dirname, '../../data/custom-templates.json');
   }
 
-  loadCustomTemplates(): LegalTemplate[] {
-    this.ensureDataFile();
+  private ensureDataFile(): string {
+    let targetFile = this.getStoragePath();
     try {
-      const raw = fs.readFileSync(DATA_FILE, 'utf8');
-      return JSON.parse(raw) as LegalTemplate[];
-    } catch {
-      return [];
+      const dir = path.dirname(targetFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      if (!fs.existsSync(targetFile)) {
+        // Try reading seed data from bundled data dir first if available
+        const seedFile = path.join(__dirname, '../../data/custom-templates.json');
+        let initialData = '[]';
+        if (fs.existsSync(seedFile)) {
+          try { initialData = fs.readFileSync(seedFile, 'utf8'); } catch {}
+        }
+        fs.writeFileSync(targetFile, initialData, 'utf8');
+      }
+      return targetFile;
+    } catch (err: any) {
+      // Fallback to /tmp if primary path is read-only (EROFS)
+      const tmpFile = path.join(os.tmpdir(), 'custom-templates.json');
+      try {
+        if (!fs.existsSync(tmpFile)) {
+          const seedFile = path.join(__dirname, '../../data/custom-templates.json');
+          let initialData = '[]';
+          if (fs.existsSync(seedFile)) {
+            try { initialData = fs.readFileSync(seedFile, 'utf8'); } catch {}
+          }
+          fs.writeFileSync(tmpFile, initialData, 'utf8');
+        }
+        return tmpFile;
+      } catch {
+        return tmpFile;
+      }
     }
   }
 
+  loadCustomTemplates(): LegalTemplate[] {
+    const file = this.ensureDataFile();
+    try {
+      if (fs.existsSync(file)) {
+        const raw = fs.readFileSync(file, 'utf8');
+        const parsed = JSON.parse(raw) as LegalTemplate[];
+        this.inMemoryCache = parsed;
+        return parsed;
+      }
+    } catch {
+      // If reading from storage fails, try seed file directly
+      try {
+        const seedFile = path.join(__dirname, '../../data/custom-templates.json');
+        if (fs.existsSync(seedFile)) {
+          const raw = fs.readFileSync(seedFile, 'utf8');
+          const parsed = JSON.parse(raw) as LegalTemplate[];
+          this.inMemoryCache = parsed;
+          return parsed;
+        }
+      } catch {}
+    }
+    return this.inMemoryCache || [];
+  }
+
   saveCustomTemplates(templates: LegalTemplate[]): void {
-    this.ensureDataFile();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
+    this.inMemoryCache = templates;
+    let targetFile = this.getStoragePath();
+    try {
+      const dir = path.dirname(targetFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(targetFile, JSON.stringify(templates, null, 2), 'utf8');
+    } catch (err: any) {
+      // If writing to primary storage fails due to EROFS/EACCES, write to /tmp
+      try {
+        const tmpFile = path.join(os.tmpdir(), 'custom-templates.json');
+        fs.writeFileSync(tmpFile, JSON.stringify(templates, null, 2), 'utf8');
+      } catch (tmpErr) {
+        console.warn('Persisting to disk failed in serverless environment; using in-memory state.', tmpErr);
+      }
+    }
   }
 
   /** Returns built-in templates merged with custom (custom overrides built-in if same id) */
@@ -91,3 +154,4 @@ class TemplateStore {
 }
 
 export const templateStore = new TemplateStore();
+
