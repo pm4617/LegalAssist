@@ -1,0 +1,336 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-900 text-slate-100 min-h-screen font-sans;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* ============================================================
+   DOCUMENT PAGE PREVIEW — mirrors print output exactly
+   Margins: Top 1", Bottom 1", Left 1.5", Right 1"
+   Page width 816px = 8.5" @ 96 dpi (standard screen resolution)
+   ============================================================ */
+/* ============================================================
+   DOCUMENT PAGE PREVIEW — Multi-page preview layout
+   Margins: Top 1", Bottom 1", Left 1.5", Right 1"
+   Page width 816px = 8.5" @ 96 dpi (standard screen resolution)
+   ============================================================ */
+.document-page {
+  background-color: #ffffff !important;
+  color: #1e293b;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+  height: auto !important;
+  box-sizing: border-box;
+  overflow: visible !important;
+  position: relative;
+
+  /* Exact margins matching export and @page:
+     Top 1" = 96px, Bottom 1" = 96px, Left 1.5" = 144px, Right 1" = 96px */
+  padding-top: 1in;
+  padding-bottom: 1in;
+  padding-left: 1.5in;
+  padding-right: 1in;
+
+  /* Court document typography */
+  font-family: 'Mukta', 'Mangal', 'Merriweather', serif;
+  font-size: 12pt;
+  line-height: 1.6;
+
+  transition: min-height 0.15s ease;
+}
+
+/* Paper Size: Legal (8.5" x 14.0") — 1344px at 96dpi */
+.document-page.paper-legal,
+.document-page:not(.paper-a4) {
+  min-height: 1344px;
+  /* Subtle dotted line showing automatic page boundary based on paper height */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 1341px,
+    #cbd5e1 1342px,
+    transparent 1344px
+  );
+  background-size: 100% 1344px;
+}
+
+/* Paper Size: A4 (8.27" x 11.69") — 1122px at 96dpi */
+.document-page.paper-a4 {
+  min-height: 1122px;
+  /* Subtle dotted line showing automatic page boundary based on paper height */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 1119px,
+    #cbd5e1 1120px,
+    transparent 1122px
+  );
+  background-size: 100% 1122px;
+}
+
+/* ============================================================
+   REALISTIC MULTI-PAGE BREAK DIVIDER (Screen Preview)
+   Full-bleed dark gap that slices document sheet into separate paper pages
+   ============================================================ */
+.page-break,
+hr.page-break,
+div.page-break {
+  display: block;
+  position: relative;
+  box-sizing: content-box;
+
+  /* Pull out across full paper width (including 1.5in left & 1.0in right padding) */
+  margin-left: -1.5in !important;
+  margin-right: -1.0in !important;
+  margin-top: 0.8in !important;
+  margin-bottom: 0.8in !important;
+
+  height: 40px;
+  background-color: #020617 !important; /* Dark workspace background matching container */
+
+  /* Top & bottom page shadows to make Page N and Page N+1 look like separate physical paper sheets */
+  box-shadow: 
+    inset 0 8px 12px -4px rgba(0, 0, 0, 0.7),
+    inset 0 -8px 12px -4px rgba(0, 0, 0, 0.7),
+    0 -6px 12px rgba(0, 0, 0, 0.25),
+    0 6px 12px rgba(0, 0, 0, 0.25);
+  border-top: 1px solid #1e293b;
+  border-bottom: 1px solid #1e293b;
+  clear: both;
+  user-select: none;
+}
+
+.page-break::after,
+hr.page-break::after,
+div.page-break::after {
+  content: "PAGE BREAK — END OF PAGE";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: #1e1b4b;
+  color: #a5b4fc;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 4px 18px;
+  border-radius: 9999px;
+  border: 1px solid #6366f1;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.document-page.paper-legal .page-break::after,
+.document-page.paper-legal hr.page-break::after,
+.document-page.paper-legal div.page-break::after {
+  content: "PAGE BREAK — END OF LEGAL PAGE (8.5\" × 14\")";
+}
+
+.document-page.paper-a4 .page-break::after,
+.document-page.paper-a4 hr.page-break::after,
+.document-page.paper-a4 div.page-break::after {
+  content: "PAGE BREAK — END OF A4 PAGE (8.27\" × 11.69\")";
+}
+
+/* Subtle court 1.5" left binding guideline (hidden during print) */
+.document-page::before {
+  content: "1.5\" Margin";
+  position: absolute;
+  top: 12px;
+  left: 1.5in;
+  transform: translateX(-100%);
+  padding-right: 6px;
+  font-size: 8px;
+  font-family: monospace;
+  color: #cbd5e1;
+  border-right: 1px dashed #e2e8f0;
+  height: calc(100% - 24px);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ============================================================
+   PRINT STYLES — Top 1", Bottom 1", Left 1.5", Right 1"
+   Matches preview margins exactly.
+   ============================================================ */
+@media print {
+
+  /* Default @page — A4 paper */
+  @page {
+    size: A4;
+    margin-top: 1in;
+    margin-bottom: 1in;
+    margin-left: 1.5in;
+    margin-right: 1in;
+  }
+
+  /* A4 @page (activated by body.paper-a4-print class) */
+  body.paper-a4-print @page {
+    size: A4;
+    margin-top: 1in;
+    margin-bottom: 1in;
+    margin-left: 1.5in;
+    margin-right: 1in;
+  }
+
+  /* Legal @page explicit (activated by body.paper-legal-print class) */
+  body.paper-legal-print @page {
+    size: 8.5in 14in;
+    margin-top: 1in;
+    margin-bottom: 1in;
+    margin-left: 1.5in;
+    margin-right: 1in;
+  }
+
+  /* Reset all layout scaffolding */
+  html,
+  body,
+  #root,
+  main,
+  article,
+  section {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    position: static !important;
+    float: none !important;
+    background: transparent !important;
+    color: black !important;
+    width: 100% !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Hide all non-content UI elements */
+  .no-print,
+  .document-page::before,
+  .copilotKitSidebar,
+  .copilotKitButton,
+  .copilotKitPopup,
+  .copilotKitHeader,
+  header,
+  aside,
+  button,
+  select,
+  input,
+  nav,
+  [role="dialog"],
+  [role="toolbar"] {
+    display: none !important;
+  }
+
+  /* Document page — remove screen-only decorations.
+     @page margins provide all spacing, so padding is zero. */
+  .document-page {
+    background-image: none !important;
+    background-color: white !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    height: auto !important;
+    border: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* Page break — invisible but forces new page */
+  .page-break,
+  hr.page-break,
+  /* Editable content area */
+  .document-page [contenteditable] {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    font-size: 12pt !important;
+    line-height: 1.6 !important;
+    color: black !important;
+    width: 100% !important;
+  }
+
+  /* Reset ALL flex/grid/scroll wrapper divs so content can flow across pages. */
+  div {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    position: static !important;
+    flex: none !important;
+    display: block !important;
+  }
+
+  /* Page break elements — MUST come after generic div rule so it overrides display/break properties.
+     visibility: visible is required so Chromium print engine doesn't optimize it away. */
+  .page-break,
+  hr.page-break,
+  div.page-break,
+  [class*="page-break"],
+  [style*="page-break"],
+  [style*="break-after"] {
+    display: block !important;
+    clear: both !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    outline: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-before: auto !important;
+    break-before: auto !important;
+    visibility: visible !important;
+  }
+
+  .page-break::after,
+  hr.page-break::after,
+  div.page-break::after {
+    display: none !important;
+  }
+
+  /* Prevent orphaned headings at page bottom */
+  h1, h2, h3, h4, h5, h6 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  /* ONLY prevent breaks inside paragraphs and table rows, NOT divs. */
+  p, blockquote, tr, td, th {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    orphans: 3;
+    widows: 3;
+  }
+}
