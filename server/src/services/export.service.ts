@@ -83,6 +83,8 @@ interface StyleState {
   bold: boolean;
   italic: boolean;
   underline: boolean;
+  fontSize?: number;
+  fontFamily?: string;
 }
 
 /**
@@ -291,11 +293,189 @@ function getAlignmentFromTag(tagHtml: string): string | null {
  */
 interface HtmlBlock {
   html: string;        // Inner HTML content of the block (for paragraphs)
+  openTag: string;     // Wrapper opening tag HTML (for inline style extraction)
   tableHtml: string;   // Full raw HTML of a <table> element (for table blocks)
   alignment: string;   // 'left' | 'right' | 'center' | 'justify' | ''
   isPageBreak: boolean;
   isHeading: boolean;
   isTable: boolean;
+}
+
+/**
+ * Structured block extraction from sanitized HTML content.
+ */
+function extractBlocks(content: string): HtmlBlock[] {
+  const html = (content || '').trim();
+  if (!html) return [];
+
+  const hasBlockTags = /<(p|div|hr|h[1-6]|center|blockquote|table)[\s/>]/i.test(html) || isPageBreakString(html);
+
+  if (!hasBlockTags) {
+    // Plain text / newline-separated
+    return html.split(/\r?\n/).map((line) => {
+      const isPB = isPageBreakString(line);
+      return {
+        html: isPB ? '' : line,
+        openTag: '',
+        tableHtml: '',
+        alignment: '',
+        isPageBreak: isPB,
+        isHeading: false,
+        isTable: false,
+      };
+    });
+  }
+
+  const blocks: HtmlBlock[] = [];
+
+  // Match top-level block elements including <table>, <hr>, <p>, <div>, <h1-6>, <center>, <blockquote>
+  const blockRe = /(<(table)([\s][^>]*)?>)([\s\S]*?)<\/table>|(<(p|div|hr|h[1-6]|center|blockquote)(\s[^>]*)?>)([\s\S]*?)<\/\6>|(<(?:hr|br|div|p)\s*\/?>)|([^<]+(?:<(?!\/?(p|div|hr|h[1-6]|center|blockquote|table)[\s/>])[^>]*>[^<]*)*)/gi;
+
+  let match: RegExpExecArray | null;
+
+  while ((match = blockRe.exec(html)) !== null) {
+    if (match[1] && match[2]?.toLowerCase() === 'table') {
+      // TABLE BLOCK
+      const fullTableHtml = match[1] + (match[4] || '') + '</table>';
+      blocks.push({
+        html: '', openTag: match[1], tableHtml: fullTableHtml,
+        alignment: '', isPageBreak: false, isHeading: false, isTable: true,
+      });
+
+    } else if (match[5]) {
+      // PARAGRAPH / DIV / HR / HEADING / BLOCKQUOTE
+      const openTag = match[5];
+      const tagName = (match[6] || '').toLowerCase();
+      const innerHtml = match[8] || '';
+
+      if (isPageBreakString(openTag) || isPageBreakString(innerHtml) || tagName === 'hr') {
+        blocks.push({ html: '', openTag: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
+        continue;
+      }
+
+      let alignment = getAlignmentFromTag(openTag) || '';
+      if (tagName === 'center') alignment = 'center';
+      const isHeading = /^h[1-6]$/.test(tagName);
+      if (isHeading && !alignment) alignment = 'center';
+
+      if (!alignment) {
+        const innerMatch = /^<(div|p|span)[^>]*>/.exec(innerHtml.trim());
+        if (innerMatch) alignment = getAlignmentFromTag(innerMatch[0]) || '';
+      }
+
+      blocks.push({ html: innerHtml, openTag, tableHtml: '', alignment, isPageBreak: false, isHeading, isTable: false });
+
+    } else if (match[9]) {
+      // Self-closing <hr/> or <br/>
+      const selfTag = match[9];
+      if (isPageBreakString(selfTag) || /^<hr/i.test(selfTag)) {
+        blocks.push({ html: '', openTag: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
+      } else {
+        blocks.push({ html: '', openTag: '', tableHtml: '', alignment: '', isPageBreak: false, isHeading: false, isTable: false });
+      }
+
+    } else if (match[10]) {
+      // Raw text between blocks
+      const raw = match[10].trim();
+      if (raw) {
+        if (isPageBreakString(raw)) {
+          blocks.push({ html: '', openTag: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
+        } else {
+          blocks.push({ html: raw, openTag: '', tableHtml: '', alignment: '', isPageBreak: false, isHeading: false, isTable: false });
+        }
+      }
+    }
+  }
+
+  if (blocks.length === 0) {
+    return html.split(/\r?\n/).map((line) => ({
+      html: isPageBreakString(line) ? '' : line,
+      openTag: '',
+      tableHtml: '',
+      alignment: '',
+      isPageBreak: isPageBreakString(line),
+      isHeading: false,
+      isTable: false,
+    }));
+  }
+
+  return blocks;
+}
+
+/**
+ * Extract line spacing from block opening tag or inner HTML style attributes.
+ * Returns dxa value for docx LineRuleType.AUTO (240 = 1.0x line spacing).
+ */
+function getParagraphLineSpacing(openTag: string, innerHtml: string): number {
+  const combined = (openTag || '') + ' ' + (innerHtml || '');
+  const match = /line-height:\s*([\d.]+)(pt|px|%)?/i.exec(combined);
+  if (match) {
+    const val = parseFloat(match[1]);
+    const unit = (match[2] || '').toLowerCase();
+    if (!isNaN(val) && val > 0) {
+      if (unit === '%') {
+        return Math.round((val / 100) * 240);
+      } else if (unit === 'pt') {
+        return Math.round((val / 12) * 240);
+      } else if (unit === 'px') {
+        return Math.round(((val * 0.75) / 12) * 240);
+      } else {
+        // Multiplier value e.g. 1.0, 1.15, 1.5, 1.6, 2.0
+        return Math.round(val * 240);
+      }
+    }
+  }
+  return 240; // Default 1.0x line spacing
+}
+
+/**
+ * Extract paragraph top and bottom margin spacing in dxa (1pt = 20 dxa).
+ */
+function getParagraphMarginSpacing(openTag: string, innerHtml: string): { before: number; after: number } {
+  const combined = (openTag || '') + ' ' + (innerHtml || '');
+  let before = 0;
+  let after = 120; // Default 6pt gap after paragraph
+
+  const marginTopMatch = /margin-top:\s*([\d.]+)(pt|px)?/i.exec(combined);
+  if (marginTopMatch) {
+    const val = parseFloat(marginTopMatch[1]);
+    const unit = (marginTopMatch[2] || 'pt').toLowerCase();
+    if (!isNaN(val) && val >= 0) {
+      const pt = unit === 'px' ? val * 0.75 : val;
+      before = Math.round(pt * 20);
+    }
+  }
+
+  const marginBottomMatch = /margin-bottom:\s*([\d.]+)(pt|px)?/i.exec(combined);
+  if (marginBottomMatch) {
+    const val = parseFloat(marginBottomMatch[1]);
+    const unit = (marginBottomMatch[2] || 'pt').toLowerCase();
+    if (!isNaN(val) && val >= 0) {
+      const pt = unit === 'px' ? val * 0.75 : val;
+      after = Math.round(pt * 20);
+    }
+  }
+
+  return { before, after };
+}
+
+/**
+ * Extract left indentation in dxa (1pt = 20 dxa).
+ */
+function getParagraphIndent(openTag: string, innerHtml: string): number | undefined {
+  const combined = (openTag || '') + ' ' + (innerHtml || '');
+  const match = /(?:margin-left|padding-left):\s*([\d.]+)(pt|px|in|cm)?/i.exec(combined);
+  if (match) {
+    const val = parseFloat(match[1]);
+    const unit = (match[2] || 'pt').toLowerCase();
+    if (!isNaN(val) && val > 0) {
+      if (unit === 'in') return Math.round(val * 1440);
+      if (unit === 'cm') return Math.round(val * 567);
+      const pt = unit === 'px' ? val * 0.75 : val;
+      return Math.round(pt * 20);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -317,121 +497,6 @@ function isPageBreakString(str: string): boolean {
     s.includes('<!-- pagebreak -->') ||
     s.includes('<!-- page-break -->')
   );
-}
-
-/**
- * Parse the sanitized HTML into a list of structured blocks.
- *
- * Strategy:
- *  - If there are NO block-level tags, split on newlines.
- *  - Tables (<table>...</table>) are extracted as isTable blocks.
- *  - Page breaks (<div class="page-break">, <hr class="page-break">, [page-break], etc.) become isPageBreak blocks.
- *  - Other block elements: <p>, <div>, <h1-6>, <center>, blockquote
- *  - Anything between block tags becomes its own text block.
- */
-function extractBlocks(content: string): HtmlBlock[] {
-  const html = (content || '').trim();
-  if (!html) return [];
-
-  const hasBlockTags = /<(p|div|hr|h[1-6]|center|blockquote|table)[\s/>]/i.test(html) || isPageBreakString(html);
-
-  if (!hasBlockTags) {
-    // Plain text / newline-separated
-    return html.split(/\r?\n/).map((line) => {
-      const isPB = isPageBreakString(line);
-      return {
-        html: isPB ? '' : line,
-        tableHtml: '',
-        alignment: '',
-        isPageBreak: isPB,
-        isHeading: false,
-        isTable: false,
-      };
-    });
-  }
-
-  const blocks: HtmlBlock[] = [];
-
-  // Match top-level block elements including <table>, <hr>, <p>, <div>, <h1-6>, <center>, <blockquote>
-  // Also match self-closing <hr/>, <br/> and bare text / comments between blocks
-  const blockRe = /(<(table)([\s][^>]*)?>)([\s\S]*?)<\/table>|(<(p|div|hr|h[1-6]|center|blockquote)(\s[^>]*)?>)([\s\S]*?)<\/\6>|(<(?:hr|br|div|p)\s*\/?>)|([^<]+(?:<(?!\/?(p|div|hr|h[1-6]|center|blockquote|table)[\s/>])[^>]*>[^<]*)*)/gi;
-
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = blockRe.exec(html)) !== null) {
-    lastIndex = blockRe.lastIndex;
-
-    if (match[1] && match[2]?.toLowerCase() === 'table') {
-      // *** TABLE BLOCK ***
-      const fullTableHtml = match[1] + (match[4] || '') + '</table>';
-      blocks.push({
-        html: '', tableHtml: fullTableHtml,
-        alignment: '', isPageBreak: false, isHeading: false, isTable: true,
-      });
-
-    } else if (match[5]) {
-      // *** PARAGRAPH / DIV / HR / HEADING / BLOCKQUOTE ***
-      const openTag = match[5];
-      const tagName = (match[6] || '').toLowerCase();
-      const innerHtml = match[8] || '';
-
-      // Page break detection: check opening tag, tag name, or inner content
-      if (isPageBreakString(openTag) || isPageBreakString(innerHtml) || tagName === 'hr') {
-        blocks.push({ html: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
-        continue;
-      }
-
-      // Detect alignment from wrapper tag first
-      let alignment = getAlignmentFromTag(openTag) || '';
-      if (tagName === 'center') alignment = 'center';
-      const isHeading = /^h[1-6]$/.test(tagName);
-      if (isHeading && !alignment) alignment = 'center';
-
-      // Try nested inner tag for alignment if still unset
-      if (!alignment) {
-        const innerMatch = /^<(div|p|span)[^>]*>/.exec(innerHtml.trim());
-        if (innerMatch) alignment = getAlignmentFromTag(innerMatch[0]) || '';
-      }
-
-      blocks.push({ html: innerHtml, tableHtml: '', alignment, isPageBreak: false, isHeading, isTable: false });
-
-    } else if (match[9]) {
-      // Self-closing <hr/> or <br/> or <div/>
-      const selfTag = match[9];
-      if (isPageBreakString(selfTag) || /^<hr/i.test(selfTag)) {
-        blocks.push({ html: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
-      } else {
-        // <br> → empty paragraph
-        blocks.push({ html: '', tableHtml: '', alignment: '', isPageBreak: false, isHeading: false, isTable: false });
-      }
-
-    } else if (match[10]) {
-      // Raw text between block elements
-      const raw = match[10].trim();
-      if (raw) {
-        if (isPageBreakString(raw)) {
-          blocks.push({ html: '', tableHtml: '', alignment: '', isPageBreak: true, isHeading: false, isTable: false });
-        } else {
-          blocks.push({ html: raw, tableHtml: '', alignment: '', isPageBreak: false, isHeading: false, isTable: false });
-        }
-      }
-    }
-  }
-
-  // If regex matched nothing meaningful, fall back to newline split
-  if (blocks.length === 0) {
-    return html.split(/\r?\n/).map((line) => ({
-      html: isPageBreakString(line) ? '' : line,
-      tableHtml: '',
-      alignment: '',
-      isPageBreak: isPageBreakString(line),
-      isHeading: false,
-      isTable: false,
-    }));
-  }
-
-  return blocks;
 }
 
 /**
@@ -521,23 +586,6 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
   });
 }
 
-/**
- * Extract paragraph line spacing from HTML style attributes.
- * Reads style="line-height: 1.5" or similar inline styles.
- * Returns dxa line spacing for docx LineRuleType.AUTO (240 = 1.0x standard single line spacing per template).
- */
-function getParagraphLineSpacing(html: string): number {
-  if (!html) return 240;
-  const match = /line-height:\s*([\d.]+)/i.exec(html);
-  if (match) {
-    const val = parseFloat(match[1]);
-    if (!isNaN(val) && val > 0) {
-      return Math.round(val * 240);
-    }
-  }
-  return 240; // Default to standard template 1.0x line spacing
-}
-
 export class ExportService {
   async generateDocx(options: DocxExportOptions): Promise<Buffer> {
     const { content, isDevanagari = false, paperSize = 'a4' } = options;
@@ -603,15 +651,18 @@ export class ExportService {
         alignment = getParagraphAlignment(block.html, plainText);
       }
 
-      const lineSpacing = getParagraphLineSpacing(block.html);
+      const { before, after } = getParagraphMarginSpacing(block.openTag, block.html);
+      const lineSpacing = getParagraphLineSpacing(block.openTag, block.html);
+      const indentLeft = getParagraphIndent(block.openTag, block.html);
       const runs = parseParagraphToTextRuns(block.html, defaultFont, defaultFontSize);
 
       children.push(new Paragraph({
         alignment,
+        indent: indentLeft ? { left: indentLeft } : undefined,
         spacing: {
-          before: 0,
-          after: 120,                // 6pt gap after paragraph
-          line: lineSpacing,          // Line spacing as specified per template (defaults to 240 = 1.0x)
+          before,
+          after,
+          line: lineSpacing,
           lineRule: LineRuleType.AUTO,
         },
         children: runs,
