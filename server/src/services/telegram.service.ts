@@ -11,12 +11,20 @@ interface TelegramSession {
   updatedAt: number;
 }
 
+function escapeHtml(text: string): string {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export class TelegramBotService {
   private botToken: string = process.env.TELEGRAM_BOT_TOKEN || '';
   private botUsername: string = '';
   private isPolling: boolean = false;
   private offset: number = 0;
   private pollTimer: NodeJS.Timeout | null = null;
+  private activePollId: number = 0;
   private sessions: Map<number, TelegramSession> = new Map();
 
   constructor() {
@@ -26,10 +34,12 @@ export class TelegramBotService {
   }
 
   public setBotToken(token: string) {
-    this.botToken = token.trim();
-    if (this.isPolling) {
-      this.stopPolling();
+    const trimmed = (token || '').trim();
+    if (this.botToken === trimmed && this.isPolling) {
+      return;
     }
+    this.stopPolling();
+    this.botToken = trimmed;
     if (this.botToken) {
       this.startPolling();
     }
@@ -63,18 +73,30 @@ export class TelegramBotService {
   }
 
   public async startPolling() {
-    if (this.isPolling || !this.botToken) return;
+    if (!this.botToken) return;
+    
+    // Stop any existing loop and increment poll ID guard
+    this.stopPolling();
     this.isPolling = true;
+    const currentPollId = ++this.activePollId;
+
+    // Clear any active webhooks so getUpdates polling works cleanly
+    try {
+      await fetch(`https://api.telegram.org/bot${this.botToken}/deleteWebhook?drop_pending_updates=false`);
+    } catch (err) {
+      console.error('Failed to delete Telegram webhook:', err);
+    }
 
     // Test token and get bot details
     await this.testConnection();
-    console.log(`🤖 Telegram Bot Service started for @${this.botUsername || 'Bot'}`);
+    console.log(`🤖 Telegram Bot Service started for @${this.botUsername || 'Bot'} (Poll ID: ${currentPollId})`);
 
-    this.pollLoop();
+    this.pollLoop(currentPollId);
   }
 
   public stopPolling() {
     this.isPolling = false;
+    this.activePollId++;
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
@@ -82,12 +104,15 @@ export class TelegramBotService {
     console.log('🤖 Telegram Bot Service stopped.');
   }
 
-  private async pollLoop() {
-    if (!this.isPolling || !this.botToken) return;
+  private async pollLoop(pollId: number) {
+    if (!this.isPolling || pollId !== this.activePollId || !this.botToken) return;
 
     try {
       const url = `https://api.telegram.org/bot${this.botToken}/getUpdates?offset=${this.offset}&timeout=10`;
       const res = await fetch(url);
+      
+      if (!this.isPolling || pollId !== this.activePollId) return;
+
       if (res.ok) {
         const data: any = await res.json();
         if (data.ok && Array.isArray(data.result)) {
@@ -96,12 +121,15 @@ export class TelegramBotService {
             await this.handleUpdate(update);
           }
         }
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        console.error(`Telegram polling HTTP ${res.status} Error:`, errJson);
       }
     } catch (err) {
-      console.error('Telegram polling error:', err);
+      console.error('Telegram polling network error:', err);
     } finally {
-      if (this.isPolling) {
-        this.pollTimer = setTimeout(() => this.pollLoop(), 1000);
+      if (this.isPolling && pollId === this.activePollId) {
+        this.pollTimer = setTimeout(() => this.pollLoop(pollId), 1000);
       }
     }
   }
@@ -114,19 +142,20 @@ export class TelegramBotService {
 
       if (!chatId) return;
 
-      if (text === '/start' || text === '/new' || text === '/restart' || text.toLowerCase().includes('hello')) {
+      const lower = text.toLowerCase();
+      if (text === '/start' || text === '/new' || text === '/restart' || lower.includes('hello') || lower.includes('hi')) {
         await this.handleStart(chatId);
         return;
       }
 
-      if (text === '/cancel' || text.toLowerCase() === 'cancel') {
+      if (text === '/cancel' || lower === 'cancel') {
         this.sessions.delete(chatId);
-        await this.sendMessage(chatId, '❌ *Session cancelled.* Type /start to begin a new legal document draft.');
+        await this.sendMessage(chatId, '❌ <b>Session cancelled.</b> Type /start to begin a new legal document draft.');
         return;
       }
 
       if (text === '/help') {
-        await this.sendMessage(chatId, `🏛️ *LegalAssist Telegram Bot Help*\n\n• /start or /new - Select a legal template & start form wizard\n• /skip - Skip optional question\n• /cancel - Cancel current session\n• /help - View commands help`);
+        await this.sendMessage(chatId, `🏛️ <b>LegalAssist Telegram Bot Help</b>\n\n• /start or /new - Select a legal template & start form wizard\n• /skip - Skip optional question\n• /cancel - Cancel current session\n• /help - View commands help`);
         return;
       }
 
@@ -138,7 +167,7 @@ export class TelegramBotService {
       }
 
       if (session.state === 'IN_WIZARD') {
-        if (text === '/skip' || text.toLowerCase() === 'skip') {
+        if (text === '/skip' || lower === 'skip') {
           await this.processAnswer(chatId, session, '');
         } else {
           await this.processAnswer(chatId, session, text);
@@ -156,7 +185,7 @@ export class TelegramBotService {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ callback_query_id: cb.id })
-      });
+      }).catch(() => {});
 
       if (data.startsWith('tmpl_')) {
         const templateId = data.replace('tmpl_', '');
@@ -174,7 +203,7 @@ export class TelegramBotService {
         }
       } else if (data === 'cmd_cancel') {
         this.sessions.delete(chatId);
-        await this.sendMessage(chatId, '❌ *Draft session cancelled.* Type /start anytime to begin again.');
+        await this.sendMessage(chatId, '❌ <b>Draft session cancelled.</b> Type /start anytime to begin again.');
       }
     }
   }
@@ -206,7 +235,7 @@ export class TelegramBotService {
 
     await this.sendMessageWithKeyboard(
       chatId,
-      `🏛️ *Welcome to LegalAssist Automated Legal Drafter!*\n\nPlease select a Legal Template to start your automated step-by-step drafting session:`,
+      `🏛️ <b>Welcome to LegalAssist Automated Legal Drafter!</b>\n\nPlease select a Legal Template to start your automated step-by-step drafting session:`,
       { inline_keyboard: inlineKeyboard }
     );
   }
@@ -243,9 +272,11 @@ export class TelegramBotService {
 
     this.sessions.set(chatId, session);
 
+    const safeTitle = escapeHtml(template.title);
+    const safeTitleMr = template.titleMr ? ` (${escapeHtml(template.titleMr)})` : '';
     await this.sendMessage(
       chatId,
-      `✅ *Selected Template:* ${template.title}${template.titleMr ? ` (${template.titleMr})` : ''}\n\n⚡ *Form Wizard Started!* Please answer the questions step-by-step below:`
+      `✅ <b>Selected Template:</b> ${safeTitle}${safeTitleMr}\n\n⚡ <b>Form Wizard Started!</b> Please answer the questions step-by-step below:`
     );
 
     await this.sendCurrentQuestion(chatId, session);
@@ -300,16 +331,16 @@ export class TelegramBotService {
     const defaultValue = session.facts[field.key] ?? field.defaultValue;
     const hasDefault = defaultValue !== undefined && defaultValue !== null && String(defaultValue).trim() !== '';
 
-    let questionText = `📋 *Step ${stepNum} of ${totalSteps}*: ${field.label}\n`;
+    let questionText = `📋 <b>Step ${stepNum} of ${totalSteps}</b>: ${escapeHtml(field.label)}\n`;
     if (field.labelMr) {
-      questionText += `*${field.labelMr}*\n`;
+      questionText += `<b>${escapeHtml(field.labelMr)}</b>\n`;
     }
 
     if (hasDefault) {
-      questionText += `\n💡 _Default / डिफॉल्ट:_ *${defaultValue}*`;
+      questionText += `\n💡 <i>Default / डिफॉल्ट:</i> <b>${escapeHtml(String(defaultValue))}</b>`;
     }
 
-    questionText += `\n\n_Key:_ \`{${field.key}}\``;
+    questionText += `\n\n<i>Key:</i> <code>{${escapeHtml(field.key)}}</code>`;
 
     const inlineKeyboard: any[][] = [];
 
@@ -382,7 +413,7 @@ export class TelegramBotService {
     const template = templateService.getTemplate(session.templateId);
     if (!template) return;
 
-    await this.sendMessage(chatId, `🎉 *All particulars recorded successfully!*\n⚙️ _Generating court-compliant .docx legal document..._`);
+    await this.sendMessage(chatId, `🎉 <b>All particulars recorded successfully!</b>\n⚙️ <i>Generating court-compliant .docx legal document...</i>`);
 
     try {
       // Merge template with facts
@@ -398,27 +429,48 @@ export class TelegramBotService {
       const fileName = `${template.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}_Draft.docx`;
 
       // Upload DOCX to Telegram Chat
-      await this.sendDocument(chatId, docxBuffer, fileName, `📄 *Here is your completed court document draft:*\n\n• *Template:* ${template.title}\n• *Format:* Microsoft Word (.docx)\n• *Paper Size:* Legal (8.5" x 14")`);
+      await this.sendDocument(
+        chatId,
+        docxBuffer,
+        fileName,
+        `📄 <b>Here is your completed court document draft:</b>\n\n• <b>Template:</b> ${escapeHtml(template.title)}\n• <b>Format:</b> Microsoft Word (.docx)\n• <b>Paper Size:</b> Legal (8.5" x 14")`
+      );
 
       this.sessions.delete(chatId);
     } catch (err: any) {
       console.error('Failed to generate Telegram document:', err);
-      await this.sendMessage(chatId, `❌ Failed to generate document: ${err.message || 'Unknown error'}`);
+      await this.sendMessage(chatId, `❌ Failed to generate document: ${escapeHtml(err.message || 'Unknown error')}`);
     }
   }
 
   public async sendMessage(chatId: number, text: string) {
     if (!this.botToken) return;
     try {
-      await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+      const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
           text,
-          parse_mode: 'Markdown'
+          parse_mode: 'HTML'
         })
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        console.error('Telegram sendMessage HTTP Error:', res.status, errJson);
+        // Fallback: send plain text if HTML parsing failed
+        if (res.status === 400) {
+          const plainText = text.replace(/<[^>]*>/g, '');
+          await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: plainText
+            })
+          });
+        }
+      }
     } catch (err) {
       console.error('Failed to send Telegram message:', err);
     }
@@ -427,16 +479,32 @@ export class TelegramBotService {
   public async sendMessageWithKeyboard(chatId: number, text: string, replyMarkup: any) {
     if (!this.botToken) return;
     try {
-      await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+      const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId,
           text,
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_markup: replyMarkup
         })
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        console.error('Telegram sendMessageWithKeyboard HTTP Error:', res.status, errJson);
+        if (res.status === 400) {
+          const plainText = text.replace(/<[^>]*>/g, '');
+          await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: plainText,
+              reply_markup: replyMarkup
+            })
+          });
+        }
+      }
     } catch (err) {
       console.error('Failed to send Telegram keyboard message:', err);
     }
@@ -449,16 +517,20 @@ export class TelegramBotService {
       formData.append('chat_id', String(chatId));
       if (caption) {
         formData.append('caption', caption);
-        formData.append('parse_mode', 'Markdown');
+        formData.append('parse_mode', 'HTML');
       }
 
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
       formData.append('document', blob, filename);
 
-      await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
+      const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
         method: 'POST',
         body: formData
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        console.error('Telegram sendDocument HTTP Error:', res.status, errJson);
+      }
     } catch (err) {
       console.error('Failed to send Telegram document:', err);
     }
