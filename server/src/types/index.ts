@@ -42,6 +42,17 @@ export interface LegalTemplate {
   updatedAt?: string;
 }
 
+export interface DocumentDraft {
+  id: string;
+  name: string;
+  templateId: string;
+  facts: ClientFacts;
+  documentBody: string;
+  createdAt: string;
+  updatedAt: string;
+  source?: 'web' | 'telegram';
+}
+
 export interface ClientFacts {
   courtCity?: string;
   courtName?: string;

@@ -9,6 +9,7 @@ import { templateService } from './services/template.service.js';
 import { copilotService, formatGeminiErrorMessage } from './services/copilot.service.js';
 import { exportService } from './services/export.service.js';
 import { telegramBotService } from './services/telegram.service.js';
+import { draftStore } from './services/draft-store.service.js';
 import { ClientFacts } from './types/index.js';
 
 dotenv.config();
@@ -167,6 +168,38 @@ app.post('/api/documents/export/docx', async (req, res) => {
   } catch (err: any) {
     console.error('Export error:', err);
     res.status(500).json({ error: 'Failed to generate Word document', details: err.message });
+  }
+});
+
+// Document Drafts API Routes
+app.get('/api/drafts', (req, res) => {
+  try {
+    const drafts = draftStore.getAllDrafts();
+    res.json(drafts);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/drafts', (req, res) => {
+  try {
+    const draft = req.body;
+    if (!draft.id || !draft.templateId) {
+      return res.status(400).json({ error: 'id and templateId are required' });
+    }
+    const saved = draftStore.saveDraft(draft);
+    res.status(201).json(saved);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/drafts/:id', (req, res) => {
+  try {
+    draftStore.deleteDraft(req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

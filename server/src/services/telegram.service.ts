@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import { templateService } from './template.service.js';
 import { exportService } from './export.service.js';
+import { draftStore } from './draft-store.service.js';
 import { ClientFacts, LegalTemplate, FieldDefinition } from '../types/index.js';
 
 interface TelegramSession {
@@ -477,6 +478,27 @@ export class TelegramBotService {
     }
   }
 
+  private getDraftPartyName(facts: ClientFacts, fields?: FieldDefinition[]): string {
+    if (!facts) return '';
+    if (fields && fields.length > 0) {
+      for (const f of fields) {
+        const k = (f.key || '').toLowerCase();
+        const l = (f.label || '').toLowerCase();
+        const lm = (f.labelMr || '').toLowerCase();
+        if (k.includes('name') || l.includes('name') || lm.includes('नाव') || k.includes('party') || k.includes('deponent') || k.includes('applicant')) {
+          const val = (facts as any)[f.key];
+          if (val && typeof val === 'string' && val.trim().length > 0 && val.trim() !== '________________________') {
+            return val.trim();
+          }
+        }
+      }
+    }
+    if (facts.party1Name && facts.party1Name.trim()) return facts.party1Name.trim();
+    if ((facts as any).deponentNewName && String((facts as any).deponentNewName).trim()) return String((facts as any).deponentNewName).trim();
+    if ((facts as any).deponentOldName && String((facts as any).deponentOldName).trim()) return String((facts as any).deponentOldName).trim();
+    return '';
+  }
+
   private async finishWizardAndSendDocx(chatId: number, session: TelegramSession) {
     if (!session.templateId) return;
     const template = templateService.getTemplate(session.templateId);
@@ -487,6 +509,25 @@ export class TelegramBotService {
     try {
       // Merge template with facts
       const mergedHtml = templateService.mergeTemplate(template, session.facts);
+
+      // Save generated draft into server-side DraftStore so it appears in Document Drafts in Web UI
+      try {
+        const partyName = this.getDraftPartyName(session.facts, template.fields);
+        const partySuffix = partyName ? ` (${partyName})` : '';
+        draftStore.saveDraft({
+          id: `telegram_${chatId}_${Date.now()}`,
+          name: `Telegram Draft${partySuffix}`,
+          templateId: template.id,
+          facts: session.facts,
+          documentBody: mergedHtml,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          source: 'telegram'
+        });
+        console.log(`✅ Saved Telegram draft for template "${template.id}" into server DraftStore.`);
+      } catch (saveErr) {
+        console.error('Failed to save Telegram draft to store:', saveErr);
+      }
 
       // Generate DOCX Buffer
       const docxBuffer = await exportService.generateDocx({

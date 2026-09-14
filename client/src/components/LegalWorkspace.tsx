@@ -614,6 +614,35 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   const [isNewDraftModalOpen, setIsNewDraftModalOpen] = useState<boolean>(false);
   const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
 
+  // Sync server & telegram drafts live
+  useEffect(() => {
+    const syncServerDrafts = () => {
+      fetch('/api/drafts')
+        .then((res) => res.json())
+        .then((serverDrafts: DocumentDraft[]) => {
+          if (Array.isArray(serverDrafts) && serverDrafts.length > 0) {
+            setDrafts((prev) => {
+              const existingMap = new Map(prev.map((d) => [d.id, d]));
+              let hasChanges = false;
+              serverDrafts.forEach((sd) => {
+                if (!existingMap.has(sd.id)) {
+                  existingMap.set(sd.id, sd);
+                  hasChanges = true;
+                }
+              });
+              if (!hasChanges) return prev;
+              return Array.from(existingMap.values());
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    syncServerDrafts();
+    const timer = setInterval(syncServerDrafts, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
   // Active Template
   const activeTemplate = useMemo(() => {
     return templates.find((t) => t.id === selectedTemplateId);
