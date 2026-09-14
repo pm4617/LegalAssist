@@ -179,19 +179,53 @@ app.get('/api/telegram/status', (req, res) => {
   });
 });
 
-app.post('/api/telegram/config', (req, res) => {
+app.post('/api/telegram/config', async (req, res) => {
   const { token } = req.body;
   telegramBotService.setBotToken(token || '');
+
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '') as string;
+  const proto = (req.headers['x-forwarded-proto'] || 'https') as string;
+  let webhookResult: any = null;
+
+  if (host && !host.includes('localhost') && !host.includes('127.0.0.1')) {
+    const webhookUrl = `${proto}://${host}/api/telegram/webhook`;
+    webhookResult = await telegramBotService.setWebhook(webhookUrl);
+  }
+
   res.json({
     token: telegramBotService.getBotToken(),
     active: telegramBotService.isBotActive(),
     username: telegramBotService.getBotUsername(),
+    webhook: webhookResult,
   });
 });
 
 app.post('/api/telegram/test', async (req, res) => {
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '') as string;
+  const proto = (req.headers['x-forwarded-proto'] || 'https') as string;
+  let webhookResult: any = null;
+
+  if (host && !host.includes('localhost') && !host.includes('127.0.0.1')) {
+    const webhookUrl = `${proto}://${host}/api/telegram/webhook`;
+    webhookResult = await telegramBotService.setWebhook(webhookUrl);
+  }
+
   const result = await telegramBotService.testConnection();
-  res.json(result);
+  res.json({ ...result, webhook: webhookResult });
+});
+
+// Telegram Webhook Handler Endpoint (For Vercel / Serverless deployments)
+app.all('/api/telegram/webhook', async (req, res) => {
+  try {
+    const update = req.body;
+    if (update && typeof update === 'object') {
+      await telegramBotService.handleUpdate(update);
+    }
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Telegram Webhook error:', err);
+    res.status(500).json({ error: err.message || 'Webhook processing error' });
+  }
 });
 
 // AI Copilot Endpoints

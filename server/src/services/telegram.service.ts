@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { templateService } from './template.service.js';
 import { exportService } from './export.service.js';
 import { ClientFacts, LegalTemplate, FieldDefinition } from '../types/index.js';
@@ -28,20 +31,71 @@ export class TelegramBotService {
   private sessions: Map<number, TelegramSession> = new Map();
 
   constructor() {
-    if (this.botToken) {
+    this.botToken = this.loadSavedToken();
+    if (this.botToken && !process.env.VERCEL) {
       this.startPolling();
+    }
+  }
+
+  private getStoragePath(): string {
+    if (process.env.VERCEL) {
+      return path.join(os.tmpdir(), 'telegram-config.json');
+    }
+    return path.join(process.cwd(), 'data', 'telegram-config.json');
+  }
+
+  private loadSavedToken(): string {
+    if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN.trim();
+    try {
+      const targetFile = this.getStoragePath();
+      if (fs.existsSync(targetFile)) {
+        const raw = fs.readFileSync(targetFile, 'utf8');
+        const parsed = JSON.parse(raw);
+        return (parsed.token || '').trim();
+      }
+    } catch {}
+    return '';
+  }
+
+  private saveTokenToStorage(token: string): void {
+    try {
+      const targetFile = this.getStoragePath();
+      const dir = path.dirname(targetFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(targetFile, JSON.stringify({ token }, null, 2), 'utf8');
+    } catch (err) {
+      console.warn('Failed to save telegram token to storage:', err);
     }
   }
 
   public setBotToken(token: string) {
     const trimmed = (token || '').trim();
-    if (this.botToken === trimmed && this.isPolling) {
+    if (this.botToken === trimmed && (this.isPolling || process.env.VERCEL)) {
       return;
     }
     this.stopPolling();
     this.botToken = trimmed;
-    if (this.botToken) {
+    this.saveTokenToStorage(trimmed);
+
+    if (this.botToken && !process.env.VERCEL) {
       this.startPolling();
+    }
+  }
+
+  public async setWebhook(webhookUrl: string): Promise<{ success: boolean; description?: string }> {
+    if (!this.botToken) return { success: false, description: 'No Telegram Bot token configured' };
+    try {
+      this.stopPolling();
+      const url = `https://api.telegram.org/bot${this.botToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}`;
+      const res = await fetch(url);
+      const data: any = await res.json();
+      if (data.ok) {
+        console.log(`🤖 Telegram Webhook successfully set to: ${webhookUrl}`);
+        return { success: true, description: data.description || 'Webhook registered successfully' };
+      }
+      return { success: false, description: data.description || 'Failed to set Telegram webhook' };
+    } catch (err: any) {
+      return { success: false, description: err.message || 'Webhook registration error' };
     }
   }
 
@@ -134,7 +188,7 @@ export class TelegramBotService {
     }
   }
 
-  private async handleUpdate(update: any) {
+  public async handleUpdate(update: any) {
     if (update.message) {
       const message = update.message;
       const chatId = message.chat?.id;
