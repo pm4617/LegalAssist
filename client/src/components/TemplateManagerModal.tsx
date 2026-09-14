@@ -592,6 +592,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
         onClose={() => setIsEditorOpen(false)}
         onSave={handleSaveTemplate}
         initialTemplate={editingTemplate}
+        allTemplates={templates}
       />
     </>
   );

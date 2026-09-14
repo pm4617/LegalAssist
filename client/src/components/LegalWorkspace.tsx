@@ -46,11 +46,13 @@ import {
   Sliders,
   PanelLeft,
   Menu,
+  Wand2,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
 import { ClientNotesModal } from './ClientNotesModal';
 import { TemplateManagerModal } from './TemplateManagerModal';
+import { FormWizardModal } from './FormWizardModal';
 import { convertToDevanagari } from '../utils/transliterate';
 import { formatToDDMMYYYY, formatToYYYYMMDD } from '../utils/date';
 import { parseKeyValueNotes } from '../utils/keyValueParser';
@@ -262,9 +264,49 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     return curr;
   };
 
+  const replacePlaceholdersInHtml = (htmlText: string, currentFacts: ClientFacts): string => {
+    if (!htmlText) return '';
+    let result = htmlText;
+
+    const factsMap: Record<string, string> = {};
+    if (currentFacts) {
+      for (const [k, v] of Object.entries(currentFacts)) {
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          factsMap[k] = String(v);
+        }
+      }
+    }
+
+    // Default court fallbacks
+    if (!factsMap.courtName) {
+      factsMap.courtName = currentFacts?.courtName || activeTemplate?.defaultCourt || 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर';
+    }
+    if (!factsMap.courtCity) {
+      factsMap.courtCity = currentFacts?.courtCity || 'अमळनेर';
+    }
+
+    for (const [key, value] of Object.entries(factsMap)) {
+      if (!key || typeof value !== 'string') continue;
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const charPattern = key.split('').map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:\\s*<[^>]*>)*');
+
+      // Match {key} even if separated by inner HTML tags, HTML entities (&lbrace; &#123;) or styling
+      const tagRegex = new RegExp(`(?:\\{|&lbrace;|&#123;|&#x7b;)(?:\\s*<[^>]*>)*\\s*${charPattern}\\s*(?:\\s*<[^>]*>)*(?:\\}|&rbrace;|&#125;|&#x7d;)`, 'gi');
+      result = result.replace(tagRegex, value);
+
+      const literalRegex = new RegExp(`\\{${escapedKey}\\}`, 'gi');
+      result = result.replace(literalRegex, value);
+    }
+
+    return result;
+  };
+
   const formatDocToHtml = (rawText: string): string => {
     if (!rawText) return '';
     let html = unescapeAllEntities(rawText);
+
+    // Live replace all placeholders in HTML (courtName, courtCity, etc.)
+    html = replacePlaceholdersInHtml(html, facts);
 
     // Standardize all page break syntax (markdown [page-break], html comments, hr tags) to visual page break div
     html = html
@@ -570,6 +612,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   });
   const [activeDraftId, setActiveDraftId] = useState<string>('');
   const [isNewDraftModalOpen, setIsNewDraftModalOpen] = useState<boolean>(false);
+  const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
 
   // Active Template
   const activeTemplate = useMemo(() => {
@@ -667,7 +710,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         const first = existingForTemplate[0];
         setActiveDraftId(first.id);
         setFacts(first.facts);
-        if (first.documentBody) setDocumentBody(first.documentBody);
+        if (first.documentBody) {
+          setDocumentBody(replacePlaceholdersInHtml(first.documentBody, first.facts));
+        }
       }
     }
   }, [selectedTemplateId]);
@@ -721,7 +766,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     if (target) {
       setActiveDraftId(target.id);
       setFacts(target.facts);
-      if (target.documentBody) setDocumentBody(target.documentBody);
+      if (target.documentBody) {
+        setDocumentBody(replacePlaceholdersInHtml(target.documentBody, target.facts));
+      }
     }
   };
 
@@ -818,7 +865,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         });
         if (res.ok) {
           const data = await res.json();
-          setDocumentBody(data.text);
+          const renderedText = replacePlaceholdersInHtml(data.text || '', facts);
+          setDocumentBody(renderedText);
           setCompliance(data.compliance);
         }
       } catch (err) {
@@ -1190,12 +1238,25 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
   // Sync default field values whenever selected template changes
   useEffect(() => {
-    if (!activeTemplate?.fields) return;
+    if (!activeTemplate) return;
+    const fieldsToSync = [...(activeTemplate.fields || [])];
+
+    // Automatically inject courtCity & courtName if courtApplicable or referenced in templateText
+    const text = activeTemplate.templateText || '';
+    if (activeTemplate.courtApplicable !== false || text.includes('{courtName}') || text.includes('{courtCity}')) {
+      if (!fieldsToSync.some((f) => f.key === 'courtCity')) {
+        fieldsToSync.push({ key: 'courtCity', defaultValue: 'अमळनेर' } as any);
+      }
+      if (!fieldsToSync.some((f) => f.key === 'courtName')) {
+        fieldsToSync.push({ key: 'courtName', defaultValue: activeTemplate.defaultCourt || 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर' } as any);
+      }
+    }
+
     setFacts((prev) => {
       const updated = { ...prev };
       let hasChanges = false;
-      activeTemplate.fields.forEach((field) => {
-        if (updated[field.key] === undefined && field.defaultValue !== undefined) {
+      fieldsToSync.forEach((field) => {
+        if ((updated[field.key] === undefined || updated[field.key] === '') && field.defaultValue !== undefined) {
           updated[field.key] = field.defaultValue;
           hasChanges = true;
         }
@@ -1204,14 +1265,59 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     });
   }, [activeTemplate]);
 
+  // Live auto-replace placeholders in documentBody whenever facts change or documentBody loads
+  useEffect(() => {
+    if (!documentBody) return;
+    const cleaned = replacePlaceholdersInHtml(documentBody, facts);
+    if (cleaned !== documentBody) {
+      setDocumentBody(cleaned);
+      if (docRichEditorRef.current && docEditorMode === 'visual') {
+        docRichEditorRef.current.innerHTML = formatDocToHtml(cleaned);
+      }
+    }
+  }, [facts, activeTemplate, documentBody]);
+
   // Dynamically group active template fields
   const fieldGroups = useMemo(() => {
     if (!activeTemplate?.fields) return [];
 
-    const groupsMap: Record<string, typeof activeTemplate.fields> = {};
+    const effectiveFields = [...activeTemplate.fields];
+    const text = activeTemplate.templateText || '';
+
+    // Automatically inject courtCity & courtName if courtApplicable or referenced in templateText
+    if (activeTemplate.courtApplicable !== false || text.includes('{courtName}') || text.includes('{courtCity}')) {
+      const hasCourtName = effectiveFields.some((f) => f.key === 'courtName');
+      const hasCourtCity = effectiveFields.some((f) => f.key === 'courtCity');
+
+      if (!hasCourtCity) {
+        effectiveFields.unshift({
+          key: 'courtCity',
+          label: 'Court City',
+          labelMr: 'कोर्टाचे शहर',
+          type: 'text',
+          required: true,
+          defaultValue: 'अमळनेर',
+          group: 'court',
+        });
+      }
+
+      if (!hasCourtName) {
+        effectiveFields.unshift({
+          key: 'courtName',
+          label: 'Court Name / Authority',
+          labelMr: 'कोर्टाचे नाव',
+          type: 'text',
+          required: true,
+          defaultValue: activeTemplate.defaultCourt || 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर',
+          group: 'court',
+        });
+      }
+    }
+
+    const groupsMap: Record<string, typeof effectiveFields> = {};
     const customKeys: string[] = [];
 
-    activeTemplate.fields.forEach((field) => {
+    effectiveFields.forEach((field) => {
       const g = field.group || 'general';
       if (!groupsMap[g]) {
         groupsMap[g] = [];
@@ -1233,6 +1339,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       fields: groupsMap[g],
     }));
   }, [activeTemplate]);
+
+  const allWizardFields = useMemo(() => {
+    return fieldGroups.flatMap((g) => g.fields);
+  }, [fieldGroups]);
 
   const getGroupHeader = (groupKey: string) => {
     const isFamily = activeTemplate?.category === 'family';
@@ -1762,7 +1872,15 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                   <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                     Client & Case Particulars
                   </h4>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">Updates draft automatically</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsWizardOpen(true)}
+                    className="px-2.5 py-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+                    title="Fill client & case particulars field-by-field using the interactive Form Wizard"
+                  >
+                    <Wand2 className="w-3.5 h-3.5" />
+                    <span>Step-by-Step Wizard</span>
+                  </button>
                 </div>
 
                 {/* Dynamic Form Input Groups based on activeTemplate.fields */}
@@ -2255,6 +2373,16 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         templates={templates}
         onTemplatesChanged={reloadTemplates}
         onSelectTemplate={(tmplId) => setSelectedTemplateId(tmplId)}
+      />
+
+      <FormWizardModal
+        isOpen={isWizardOpen}
+        onClose={() => setIsWizardOpen(false)}
+        fields={allWizardFields}
+        facts={facts}
+        onFactChange={handleFactChange}
+        activeTemplateTitle={activeTemplate?.title || documentTitle}
+        apiKey={apiKey}
       />
 
       {/* SLIDE-OVER CLIENT FORM DRAWER FOR TABLET / MOBILE MODE */}

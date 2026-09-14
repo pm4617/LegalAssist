@@ -99,7 +99,7 @@ export class TemplateService {
     // Replace all placeholders
     const replacements: Record<string, string> = {
       courtCity: (facts.courtCity && facts.courtCity.trim()) ? facts.courtCity : 'अमळनेर',
-      courtName: (facts.courtName && facts.courtName.trim()) ? facts.courtName : 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर',
+      courtName: (facts.courtName && facts.courtName.trim()) ? facts.courtName : (template.defaultCourt || 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर'),
       hmpNo: (facts.hmpNo && facts.hmpNo.trim()) ? facts.hmpNo : '     /    ',
       caseYear: (facts.caseYear && facts.caseYear.trim()) ? facts.caseYear : new Date().getFullYear().toString(),
       
@@ -169,8 +169,16 @@ export class TemplateService {
     }
 
     for (const [key, val] of Object.entries(replacements)) {
-      const regex = new RegExp(`{${key}}`, 'g');
-      text = text.replace(regex, val);
+      if (!key || val === undefined || val === null) continue;
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const charPattern = key.split('').map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:\\s*<[^>]*>)*');
+
+      // Match {key} even if separated by inner HTML tags, HTML entities (&lbrace; &#123;) or styling
+      const tagRegex = new RegExp(`(?:\\{|&lbrace;|&#123;|&#x7b;)(?:\\s*<[^>]*>)*\\s*${charPattern}\\s*(?:\\s*<[^>]*>)*(?:\\}|&rbrace;|&#125;|&#x7d;)`, 'gi');
+      text = text.replace(tagRegex, val);
+
+      const literalRegex = new RegExp(`\\{${escapedKey}\\}`, 'gi');
+      text = text.replace(literalRegex, val);
     }
 
     return text;

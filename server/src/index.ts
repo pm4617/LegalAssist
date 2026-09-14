@@ -8,6 +8,7 @@ import { CopilotRuntime, BuiltInAgent } from '@copilotkit/runtime/v2';
 import { templateService } from './services/template.service.js';
 import { copilotService, formatGeminiErrorMessage } from './services/copilot.service.js';
 import { exportService } from './services/export.service.js';
+import { telegramBotService } from './services/telegram.service.js';
 import { ClientFacts } from './types/index.js';
 
 dotenv.config();
@@ -167,6 +168,30 @@ app.post('/api/documents/export/docx', async (req, res) => {
     console.error('Export error:', err);
     res.status(500).json({ error: 'Failed to generate Word document', details: err.message });
   }
+});
+
+// Telegram Bot API Routes
+app.get('/api/telegram/status', (req, res) => {
+  res.json({
+    token: telegramBotService.getBotToken(),
+    active: telegramBotService.isBotActive(),
+    username: telegramBotService.getBotUsername(),
+  });
+});
+
+app.post('/api/telegram/config', (req, res) => {
+  const { token } = req.body;
+  telegramBotService.setBotToken(token || '');
+  res.json({
+    token: telegramBotService.getBotToken(),
+    active: telegramBotService.isBotActive(),
+    username: telegramBotService.getBotUsername(),
+  });
+});
+
+app.post('/api/telegram/test', async (req, res) => {
+  const result = await telegramBotService.testConnection();
+  res.json(result);
 });
 
 // AI Copilot Endpoints

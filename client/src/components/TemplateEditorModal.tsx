@@ -37,6 +37,7 @@ import {
   Download,
   Upload,
   Copy,
+  Sparkles,
 } from 'lucide-react';
 import { LegalTemplate, FieldDefinition, TemplateCategory, TemplateLanguage } from '../types';
 import { convertToDevanagari } from '../utils/transliterate';
@@ -46,6 +47,7 @@ interface TemplateEditorModalProps {
   onClose: () => void;
   onSave: (template: LegalTemplate) => Promise<void>;
   initialTemplate?: LegalTemplate | null;
+  allTemplates?: LegalTemplate[];
 }
 
 export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
@@ -53,6 +55,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
   onClose,
   onSave,
   initialTemplate,
+  allTemplates = [],
 }) => {
   const isEditing = !!initialTemplate;
   const bodyTextAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -183,6 +186,84 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     reader.readAsText(file);
   };
 
+  const formatKeyToLabel = (key: string): string => {
+    if (!key) return '';
+    const spaced = key
+      .replace(/([a-z])([A-Z0-9])/g, '$1 $2')
+      .replace(/([0-9])([a-zA-Z])/g, '$1 $2')
+      .replace(/[_]/g, ' ')
+      .trim();
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+  };
+
+  const formatKeyToMarathiLabel = (key: string): string => {
+    const cleanKey = key.toLowerCase();
+    if (cleanKey.includes('party1') || cleanKey.includes('party 1')) return 'अर्जदार / प्रथम पक्षकार माहिती';
+    if (cleanKey.includes('party2') || cleanKey.includes('party 2')) return 'सामनेवाला / द्वितीय पक्षकार माहिती';
+    if (cleanKey.includes('party3') || cleanKey.includes('party 3')) return 'तृतीय पक्षकार नाव';
+    if (cleanKey.includes('party4') || cleanKey.includes('party 4')) return 'चतुर्थ पक्षकार नाव';
+    if (cleanKey.includes('party5') || cleanKey.includes('party 5')) return 'पाचवा पक्षकार नाव';
+    if (cleanKey.includes('address')) return 'पत्ता';
+    if (cleanKey.includes('age')) return 'वय';
+    if (cleanKey.includes('date')) return 'दिनांक';
+    if (cleanKey.includes('amount')) return 'रक्कम';
+    if (cleanKey.includes('city')) return 'शहर';
+    if (cleanKey.includes('name')) return 'नाव';
+    return formatKeyToLabel(key);
+  };
+
+  const handleGenerateVariablesFromText = () => {
+    const rawText = templateText || (richEditorRef.current ? richEditorRef.current.innerHTML : '');
+    if (!rawText || !rawText.trim()) {
+      alert('Please enter or paste template text first in the Body tab.');
+      return;
+    }
+
+    const matches = rawText.match(/\{([a-zA-Z0-9_\-]+)\}/g);
+    if (!matches || matches.length === 0) {
+      alert('No {variableName} placeholders found in the template text.');
+      return;
+    }
+
+    const existingKeys = new Set(fields.map((f) => f.key.trim().toLowerCase()));
+    const newFieldsToCreate: FieldDefinition[] = [];
+    const processedKeys = new Set<string>();
+
+    for (const rawMatch of matches) {
+      const key = rawMatch.replace(/[\{\}]/g, '').trim();
+      if (!key || key.includes(' ') || key.includes('<') || key.includes('>')) continue;
+
+      const lowerKey = key.toLowerCase();
+      if (existingKeys.has(lowerKey) || processedKeys.has(lowerKey)) continue;
+
+      processedKeys.add(lowerKey);
+
+      const labelEn = formatKeyToLabel(key);
+      const labelMr = formatKeyToMarathiLabel(key);
+      const isDateField = key.toLowerCase().includes('date');
+      const isNumberField = key.toLowerCase().includes('age') || key.toLowerCase().includes('year') || key.toLowerCase().includes('no');
+
+      const newField: FieldDefinition = {
+        key: key,
+        label: labelEn,
+        labelMr: labelMr,
+        type: isDateField ? 'date' : isNumberField ? 'number' : 'text',
+        required: false,
+        group: key.toLowerCase().startsWith('party') ? 'parties' : 'general',
+      };
+
+      newFieldsToCreate.push(newField);
+    }
+
+    if (newFieldsToCreate.length === 0) {
+      alert('All {variableName} placeholders in the text are already present in your Form Input Fields!');
+      return;
+    }
+
+    setFields((prev) => [...prev, ...newFieldsToCreate]);
+    alert(`Successfully generated ${newFieldsToCreate.length} new form input field(s):\n\n${newFieldsToCreate.map((f) => `• {${f.key}} → ${f.label}`).join('\n')}`);
+  };
+
   const [newStatRequirement, setNewStatRequirement] = useState('');
   const [customSections, setCustomSections] = useState<string[]>([]);
   const [isSectionManagerOpen, setIsSectionManagerOpen] = useState(false);
@@ -289,7 +370,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     setCustomSections(customSections.filter((s) => s !== sectionName));
   };
 
-  // Compute all available placeholders (standard + all custom fields)
+  // Compute all available placeholders (standard + current custom fields + other templates custom fields)
   const allAvailablePlaceholders = useMemo(() => {
     const standardKeys = [
       'courtCity', 'courtName', 'hmpNo', 'caseYear',
@@ -300,9 +381,28 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
       'purpose', 'termYears', 'governingLaw', 'disputeCity', 'outstandingAmount',
       'invoiceDetails', 'noticeDays', 'advocateName', 'advocateAddress'
     ];
-    const customKeys = fields.map((f) => f.key).filter((k) => k && k.trim());
-    return Array.from(new Set([...standardKeys, ...customKeys]));
-  }, [fields]);
+    const currentCustomKeys = fields.map((f) => f.key).filter((k) => k && k.trim());
+
+    const otherTemplateKeys: string[] = [];
+    (allTemplates || []).forEach((t) => {
+      (t.fields || []).forEach((f) => {
+        if (f.key && f.key.trim()) otherTemplateKeys.push(f.key.trim());
+      });
+      if (t.templateText) {
+        const matches = t.templateText.match(/\{([a-zA-Z0-9_\-]+)\}/g);
+        if (matches) {
+          matches.forEach((m) => {
+            const cleanKey = m.replace(/[\{\}]/g, '').trim();
+            if (cleanKey && !cleanKey.includes(' ') && !cleanKey.includes('<')) {
+              otherTemplateKeys.push(cleanKey);
+            }
+          });
+        }
+      }
+    });
+
+    return Array.from(new Set([...standardKeys, ...currentCustomKeys, ...otherTemplateKeys]));
+  }, [fields, allTemplates]);
 
   // Group placeholders into categorized sections for sidebar view
   const groupedPlaceholders = useMemo(() => {
@@ -330,17 +430,28 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     ];
 
     const knownKeys = new Set(categories.flatMap((c) => c.items));
+    const currentKeys = new Set(fields.map((f) => f.key).filter(Boolean));
     const customKeys = allAvailablePlaceholders.filter((ph) => !knownKeys.has(ph));
 
-    if (customKeys.length > 0) {
+    const currentTemplateCustoms = customKeys.filter((ph) => currentKeys.has(ph));
+    const otherTemplateCustoms = customKeys.filter((ph) => !currentKeys.has(ph));
+
+    if (currentTemplateCustoms.length > 0) {
       categories.push({
-        title: 'Custom Form Fields ★',
-        items: customKeys,
+        title: 'This Template Custom Fields ★',
+        items: currentTemplateCustoms,
+      });
+    }
+
+    if (otherTemplateCustoms.length > 0) {
+      categories.push({
+        title: 'Other Templates Custom Fields 🌐',
+        items: otherTemplateCustoms,
       });
     }
 
     return categories;
-  }, [allAvailablePlaceholders]);
+  }, [allAvailablePlaceholders, fields]);
 
   // Filter placeholders by sidebar search query
   const filteredPlaceholderGroups = useMemo(() => {
@@ -1635,6 +1746,15 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       >
                         Clean Raw Tags
                       </button>
+                      <button
+                        type="button"
+                        onClick={handleGenerateVariablesFromText}
+                        className="px-2 py-0.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/80 dark:hover:bg-emerald-900 border border-emerald-300 dark:border-emerald-700/80 rounded-md transition flex items-center gap-1 ml-1 shadow-sm"
+                        title="Scan template text for {variableName} placeholders and automatically create missing form input fields"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        Generate Variables
+                      </button>
                     </div>
                   </div>
 
@@ -1767,6 +1887,14 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateVariablesFromText}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-medium text-xs flex items-center gap-1.5 transition shadow-sm"
+                    title="Scan template text for {variableName} placeholders and automatically create missing form input fields"
+                  >
+                    <Sparkles className="w-4 h-4" /> Auto-Generate from Text
+                  </button>
                   <button
                     type="button"
                     onClick={() => setIsSectionManagerOpen(true)}

@@ -24,12 +24,65 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [localKey, setLocalKey] = useState(apiKey);
   const [localName, setLocalName] = useState(advocateName);
+  const [telegramToken, setTelegramToken] = useState('');
+  const [telegramStatus, setTelegramStatus] = useState<{ active: boolean; username: string }>({ active: false, username: '' });
+  const [testingTelegram, setTestingTelegram] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      fetch('/api/telegram/status')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.token) setTelegramToken(data.token);
+          setTelegramStatus({ active: Boolean(data.active), username: data.username || '' });
+        })
+        .catch((err) => console.error('Failed to fetch Telegram bot status:', err));
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const handleSave = () => {
+  const handleTestTelegram = async () => {
+    if (!telegramToken.trim()) return;
+    setTestingTelegram(true);
+    try {
+      // First save token config
+      await fetch('/api/telegram/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: telegramToken })
+      });
+      // Test connection
+      const res = await fetch('/api/telegram/test', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setTelegramStatus({ active: true, username: data.botName || '' });
+        alert(`✅ Connected successfully to Telegram Bot: @${data.botName}`);
+      } else {
+        alert(`❌ Connection failed: ${data.error || 'Invalid token'}`);
+      }
+    } catch (err: any) {
+      alert(`❌ Error testing Telegram bot: ${err.message}`);
+    } finally {
+      setTestingTelegram(false);
+    }
+  };
+
+  const handleSave = async () => {
     onSaveApiKey(localKey);
     onSaveAdvocateName(localName);
+
+    if (telegramToken !== undefined) {
+      try {
+        await fetch('/api/telegram/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: telegramToken })
+        });
+      } catch (err) {
+        console.error('Failed to save Telegram token:', err);
+      }
+    }
     onClose();
   };
 
@@ -136,6 +189,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onChange={(e) => setLocalName(e.target.value)}
               className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
             />
+          </div>
+
+          {/* Telegram Bot Integration */}
+          <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                <span className="text-sky-500 font-bold text-base">✈️</span>
+                Telegram Chatbot Integration
+              </label>
+              {telegramStatus.username && (
+                <a
+                  href={`https://t.me/${telegramStatus.username}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950 px-2 py-0.5 rounded-full border border-sky-200 dark:border-sky-800 hover:underline flex items-center gap-1"
+                >
+                  <span>@{telegramStatus.username}</span>
+                </a>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                placeholder="Telegram Bot Token (e.g. 123456789:ABCdef...)"
+                value={telegramToken}
+                onChange={(e) => setTelegramToken(e.target.value)}
+                className="flex-1 px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent transition font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleTestTelegram}
+                disabled={testingTelegram || !telegramToken.trim()}
+                className="px-3 py-2.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition shrink-0 cursor-pointer"
+              >
+                {testingTelegram ? 'Testing...' : 'Test Bot'}
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Allows legal clients to select templates, answer form wizard questions step-by-step on Telegram, and receive completed court-formatted <code className="text-sky-600 dark:text-sky-400 font-mono">.docx</code> documents directly in Telegram chat!
+            </p>
           </div>
         </div>
 
