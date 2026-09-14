@@ -245,9 +245,25 @@ export class TelegramBotService {
         const templateId = data.replace('tmpl_', '');
         await this.startWizardForTemplate(chatId, templateId);
       } else if (data.startsWith('ans_')) {
-        const value = data.replace('ans_', '');
+        let value = data.replace('ans_', '');
         const session = this.sessions.get(chatId);
-        if (session && session.state === 'IN_WIZARD') {
+        if (session && session.state === 'IN_WIZARD' && session.templateId) {
+          const template = templateService.getTemplate(session.templateId);
+          if (template) {
+            const fields = this.getEffectiveFields(template);
+            const field = fields[session.currentFieldIndex];
+            if (field) {
+              if (value === 'default') {
+                value = String(session.facts[field.key] ?? field.defaultValue ?? '');
+              } else if (value.startsWith('opt_')) {
+                const optIdx = parseInt(value.replace('opt_', ''), 10);
+                if (Array.isArray(field.options) && field.options[optIdx] !== undefined) {
+                  const opt = field.options[optIdx];
+                  value = typeof opt === 'string' ? opt : opt.value;
+                }
+              }
+            }
+          }
           await this.processAnswer(chatId, session, value);
         }
       } else if (data === 'cmd_skip') {
@@ -352,7 +368,7 @@ export class TelegramBotService {
           group: 'court'
         });
       }
-      if (!fields.some((f) => f.key === 'courtName')) {
+      if (!fields.some((f) => f.key === 'courtName') && !fields.some((f) => f.key === 'authorityName')) {
         fields.unshift({
           key: 'courtName',
           label: 'Court Name / Authority',
@@ -401,7 +417,7 @@ export class TelegramBotService {
     if (hasDefault) {
       const shortVal = String(defaultValue).length > 20 ? String(defaultValue).slice(0, 18) + '...' : String(defaultValue);
       inlineKeyboard.push([
-        { text: `✅ Use Default: ${shortVal}`, callback_data: `ans_${defaultValue}` }
+        { text: `✅ Use Default: ${shortVal}`, callback_data: 'ans_default' }
       ]);
     }
 
@@ -411,11 +427,10 @@ export class TelegramBotService {
         { text: '❌ No (नाही)', callback_data: 'ans_false' }
       ]);
     } else if (field.type === 'select' && Array.isArray(field.options) && field.options.length > 0) {
-      field.options.forEach((opt: any) => {
-        const val = typeof opt === 'string' ? opt : opt.value;
+      field.options.forEach((opt: any, idx: number) => {
         const lbl = typeof opt === 'string' ? opt : opt.label;
         inlineKeyboard.push([
-          { text: `🔹 ${lbl}`, callback_data: `ans_${val}` }
+          { text: `🔹 ${lbl}`, callback_data: `ans_opt_${idx}` }
         ]);
       });
     }
