@@ -53,9 +53,10 @@ export class CopilotService {
 
   private async generateWithGeminiFallback(client: GoogleGenAI, contents: any, config?: any): Promise<string> {
     const modelsToTry = [
-    'gemini-2.5-flash',  // Change this to the primary stable Flash model
-      'gemini-1.5-flash'   //  Change this to the stable fallback model
-  ];
+    'gemini-2.5-flash', // Primary stable Flash model
+    'gemini-2.5-pro',   // High-capability fallback model
+    'gemini-2.0-flash'  // Alternative fast fallback model
+      ];
     let lastError: any = null;
 
     for (const model of modelsToTry) {
