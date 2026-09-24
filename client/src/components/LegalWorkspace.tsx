@@ -2634,14 +2634,6 @@ Always include: one to fill client details, one to audit compliance, one templat
                     placeholder="Raw legal document draft code will appear here... (AI autocomplete enabled: Start typing and Copilot will suggest the rest of the legal clause!)"
                     autosuggestionsConfig={{
                       textareaPurpose: `You are an AI assistant helping a lawyer draft a ${activeTemplate?.title || documentTitle}. Suggest autocomplete completions for the HTML legal clauses based on the client facts.`,
-                      chatApiConfigs: {
-                        suggestionsApiConfig: {
-                          forwardedParams: {
-                            max_tokens: 500,
-                            stop: ["\n", "</p>"]
-                          },
-                        },
-                      },
                     }}
                   />
                 )}
