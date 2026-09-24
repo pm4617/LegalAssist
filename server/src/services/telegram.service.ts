@@ -275,26 +275,59 @@ export class TelegramBotService {
       } else if (data === 'cmd_cancel') {
         this.sessions.delete(chatId);
         await this.sendMessage(chatId, '❌ <b>Draft session cancelled.</b> Type /start anytime to begin again.');
+      } else if (data.startsWith('pg_')) {
+        // Pagination: pg_N (where N is zero-based page index)
+        const page = parseInt(data.replace('pg_', ''), 10);
+        if (!isNaN(page)) {
+          await this.handleStart(chatId, page);
+        }
       }
     }
   }
 
-  private async handleStart(chatId: number) {
+  private static readonly PAGE_SIZE = 8;
+
+  /** Builds a paginated inline keyboard for the template list */
+  private buildTemplatePageKeyboard(templates: any[], page: number): any[][] {
+    const pageSize = TelegramBotService.PAGE_SIZE;
+    const total = templates.length;
+    const totalPages = Math.ceil(total / pageSize);
+    const start = page * pageSize;
+    const pageTemplates = templates.slice(start, start + pageSize);
+
+    const keyboard: any[][] = [];
+
+    // Template buttons (one per row)
+    pageTemplates.forEach((t) => {
+      // Truncate label so button text stays readable; callback_data must be ≤64 bytes
+      const label = `📜 ${t.titleMr || t.title}`.substring(0, 60);
+      const cbData = `tmpl_${t.id}`.substring(0, 64);
+      keyboard.push([{ text: label, callback_data: cbData }]);
+    });
+
+    // Navigation row
+    const navRow: any[] = [];
+    if (page > 0) {
+      navRow.push({ text: '◀ Back', callback_data: `pg_${page - 1}` });
+    }
+    if (page < totalPages - 1) {
+      navRow.push({ text: `▶ Next (${start + pageSize + 1}–${Math.min((page + 2) * pageSize, total)} of ${total})`, callback_data: `pg_${page + 1}` });
+    }
+    if (navRow.length > 0) keyboard.push(navRow);
+
+    return keyboard;
+  }
+
+  private async handleStart(chatId: number, page: number = 0) {
     const templates = templateService.getAllTemplates();
     if (!templates || templates.length === 0) {
       await this.sendMessage(chatId, '⚠️ No legal templates found in system.');
       return;
     }
 
-    const inlineKeyboard: any[][] = [];
-    templates.forEach((t) => {
-      inlineKeyboard.push([
-        {
-          text: `📜 ${t.title}${t.titleMr ? ` (${t.titleMr})` : ''}`,
-          callback_data: `tmpl_${t.id}`
-        }
-      ]);
-    });
+    const inlineKeyboard = this.buildTemplatePageKeyboard(templates, page);
+    const totalPages = Math.ceil(templates.length / TelegramBotService.PAGE_SIZE);
+    const pageInfo = totalPages > 1 ? ` (Page ${page + 1} of ${totalPages})` : '';
 
     this.sessions.set(chatId, {
       chatId,
@@ -306,7 +339,7 @@ export class TelegramBotService {
 
     await this.sendMessageWithKeyboard(
       chatId,
-      `🏛️ <b>Welcome to LegalAssist Automated Legal Drafter!</b>\n\nPlease select a Legal Template to start your automated step-by-step drafting session:`,
+      `🏛️ <b>Welcome to LegalAssist Automated Legal Drafter!</b>\n\nPlease select a Legal Template to start your automated step-by-step drafting session${pageInfo}:`,
       { inline_keyboard: inlineKeyboard }
     );
   }

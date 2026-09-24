@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 // @ts-ignore
 import { createCopilotExpressHandler } from '@copilotkit/runtime/v2/express';
 // @ts-ignore
@@ -309,7 +311,7 @@ app.post('/api/copilot/transliterate', async (req, res) => {
   }
 });
 
-// Direct Document Translation Endpoint (Gemini 3.7 Flash)
+// Direct Document Translation Endpoint (Gemini 2.0 Flash)
 app.post('/api/copilot/translate', async (req, res) => {
   try {
     const { documentBody, targetLanguage, apiKey } = req.body;
@@ -319,7 +321,7 @@ app.post('/api/copilot/translate', async (req, res) => {
 
     const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
     if (!geminiKey) {
-      return res.status(400).json({ error: 'Gemini 3.7 Flash API key required. Please configure your Gemini API key in Settings (⚙️).' });
+      return res.status(400).json({ error: 'Gemini API key required. Please configure your Gemini API key in Settings (⚙️).' });
     }
 
     const targetLang = targetLanguage === 'mr' ? 'mr' : 'en';
@@ -331,8 +333,88 @@ app.post('/api/copilot/translate', async (req, res) => {
 
     res.json({ translated });
   } catch (err: any) {
-    console.error('Gemini 3.7 Flash translate error:', err);
-    res.status(500).json({ error: 'Gemini 3.7 Flash translation failed', details: err.message });
+    console.error('Gemini translate error:', err);
+    res.status(500).json({ error: formatGeminiErrorMessage(err), details: err.message });
+  }
+});
+
+// AI Chat Suggestions — generates 3–5 context-aware suggested actions for CopilotKit sidebar
+app.post('/api/copilot/suggest', async (req, res) => {
+  try {
+    const { templateTitle, documentBody, facts, apiKey } = req.body;
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+
+    if (!geminiKey) {
+      return res.json({ suggestions: [] });
+    }
+
+    const suggestions = await copilotService.generateSuggestions({
+      templateTitle: templateTitle || '',
+      documentBody: documentBody || '',
+      facts: facts || {},
+      apiKey: geminiKey
+    });
+
+    res.json({ suggestions });
+  } catch (err: any) {
+    console.error('Suggest error:', err);
+    res.json({ suggestions: [] }); // Graceful fallback — empty suggestions
+  }
+});
+
+// AI Statutory Compliance Audit (Gemini 2.0 Flash)
+app.post('/api/copilot/ai-audit', async (req, res) => {
+  try {
+    const { templateId, templateTitle, documentBody, facts, apiKey } = req.body;
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+
+    if (!geminiKey || !documentBody) {
+      return res.status(400).json({ error: 'documentBody and Gemini API key are required.' });
+    }
+
+    const template = templateId ? templateService.getTemplate(templateId) : null;
+    const auditResult = await copilotService.aiAuditDocument({
+      templateTitle: templateTitle || template?.title || 'Legal Document',
+      documentBody,
+      facts: facts || {},
+      statutoryRequirements: template?.statutoryRequirements || [],
+      apiKey: geminiKey
+    });
+
+    res.json(auditResult);
+  } catch (err: any) {
+    console.error('AI Audit error:', err);
+    res.status(500).json({ error: formatGeminiErrorMessage(err) });
+  }
+});
+
+// AI Grammar & Legal Style Checker
+app.post('/api/copilot/grammar', async (req, res) => {
+  try {
+    const { templateTitle, documentBody, apiKey } = req.body;
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+    if (!geminiKey || !documentBody) return res.status(400).json({ error: 'documentBody and Gemini API key are required.' });
+    
+    const corrected = await copilotService.checkGrammar({ documentBody, templateTitle, apiKey: geminiKey });
+    res.json({ corrected });
+  } catch (err: any) {
+    console.error('AI Grammar error:', err);
+    res.status(500).json({ error: formatGeminiErrorMessage(err) });
+  }
+});
+
+// AI Marathi Clause Drafter
+app.post('/api/copilot/draft-clause', async (req, res) => {
+  try {
+    const { prompt, templateTitle, apiKey } = req.body;
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+    if (!geminiKey || !prompt) return res.status(400).json({ error: 'prompt and Gemini API key are required.' });
+    
+    const clauseHTML = await copilotService.draftClause({ prompt, templateTitle, apiKey: geminiKey });
+    res.json({ clauseHTML });
+  } catch (err: any) {
+    console.error('AI Clause Drafter error:', err);
+    res.status(500).json({ error: formatGeminiErrorMessage(err) });
   }
 });
 
@@ -379,7 +461,8 @@ app.all(['/api/copilot/connect', '/api/copilot/agent/:agent/connect', '/api/copi
 });
 
 // Primary AG-UI Stream Handler for JurisCopilot Gemini AI Engine
-app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/api/copilot/agent/:agent/run'], async (req, res) => {
+// NOTE: This must come AFTER all specific /api/copilot/* routes so it acts as a fallback catch-all
+app.all(['/api/copilot', '/api/copilot/run', '/api/copilot/agents/:agent/run', '/api/copilot/agent/:agent/run'], async (req, res) => {
   const reqPath = req.path || '';
 
   if (req.body?.method === 'info' || reqPath.endsWith('/info')) {
@@ -396,13 +479,21 @@ app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/a
     });
   }
 
-  const rawKeys = [
+  const rawKeys: (string | undefined)[] = [
     req.headers['x-gemini-api-key'] as string,
     req.body?.apiKey,
     req.body?.properties?.apiKey,
     req.body?.clientContext?.apiKey,
     process.env.GEMINI_API_KEY
   ];
+
+  // Also scan the 'readable' array sent by useCopilotReadable({ description: 'Gemini API key...', value: { apiKey } })
+  if (Array.isArray(req.body?.readable)) {
+    for (const item of req.body.readable) {
+      const val = item?.value || item;
+      if (val?.apiKey && typeof val.apiKey === 'string') rawKeys.push(val.apiKey);
+    }
+  }
 
   let geminiKey: string | undefined;
   for (const k of rawKeys) {
@@ -424,6 +515,13 @@ app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/a
   const msgId = `msg_${Date.now()}`;
   const agentName = req.params.agent || 'default';
 
+  // DEBUG: Dump req.body to figure out where CopilotKit is hiding the state
+  try {
+    fs.writeFileSync(path.join(process.cwd(), 'scratch_req.json'), JSON.stringify(req.body, null, 2));
+  } catch (e) {
+    console.error('Debug write failed', e);
+  }
+
   const emit = (event: string, data: object) => {
     res.write(`data: ${JSON.stringify({ type: event, specificationVersion: 'v1', ...data })}\n\n`);
   };
@@ -440,30 +538,39 @@ app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/a
     });
 
     function buildClientContext(body: any): any {
-      const cc = body?.clientContext || body?.context || body?.readable;
-      let docBody = cc?.documentBody || cc?.body;
-      let title = cc?.templateTitle || cc?.title;
-      let facts = cc?.clientFacts || cc?.facts;
+      let docBody = '';
+      let title = '';
+      let facts: any = null;
 
-      if (!docBody || !title || !facts) {
-        const checkItem = (item: any) => {
-          const val = item?.value || item;
-          if (!docBody && (val?.documentBody || val?.body)) docBody = val.documentBody || val.body;
-          if (!title && (val?.templateTitle || val?.title)) title = val.templateTitle || val.title;
-          if (!facts && (val?.party1Name || val?.courtCity || val?.clientFacts)) facts = val.clientFacts || val;
-        };
+      function deepSearch(obj: any) {
+        if (!obj) return;
+        
+        if (typeof obj === 'string') {
+          if (obj.trim().startsWith('{') && obj.trim().endsWith('}')) {
+            try { deepSearch(JSON.parse(obj)); } catch (e) {}
+          }
+          return;
+        }
+        
+        if (typeof obj !== 'object') return;
+        
+        // Exact matches
+        if (!docBody && (typeof obj.documentBody === 'string')) docBody = obj.documentBody;
+        if (!title && (typeof obj.templateTitle === 'string')) title = obj.templateTitle;
+        if (!title && (typeof obj.title === 'string' && obj.title.length < 100 && obj.title.trim())) title = obj.title;
+        if (!facts && obj.clientFacts && typeof obj.clientFacts === 'object') facts = obj.clientFacts;
+        
+        // Fuzzy matches if exact not found
+        if (!facts && (obj.party1Name || obj.courtCity || obj.alimonyAmount)) facts = obj;
 
-        if (Array.isArray(cc)) cc.forEach(checkItem);
-        if (Array.isArray(body?.readable)) body.readable.forEach(checkItem);
-        if (Array.isArray(body?.messages)) {
-          body.messages.forEach((m: any) => {
-            if (m?.clientContext) {
-              if (Array.isArray(m.clientContext)) m.clientContext.forEach(checkItem);
-              else checkItem(m.clientContext);
-            }
-          });
+        if (docBody && title && facts) return; // Found all
+
+        for (const key of Object.keys(obj)) {
+          deepSearch(obj[key]);
         }
       }
+
+      deepSearch(body);
 
       return {
         documentBody: docBody || '',
@@ -506,8 +613,9 @@ app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/a
     const latestMessage = extractUserMessage(req.body);
 
     if (!geminiKey) {
+      const noKeyMsg = '⚙️ **Gemini API Key not configured.**\n\nTo enable the AI Legal Copilot:\n1. Click **Settings (⚙️)** in the top toolbar\n2. Enter your free Gemini API key from [aistudio.google.com](https://aistudio.google.com/apikey)\n3. Click Save — the AI Copilot will be ready instantly\n\nThe free tier supports gemini-3.6-flash with 1M token context.';
       emit('TEXT_MESSAGE_START', { message_id: msgId, messageId: msgId, id: msgId, role: 'assistant', specificationVersion: 'v1' });
-      emit('TEXT_MESSAGE_CONTENT', { message_id: msgId, messageId: msgId, id: msgId, delta: 'Please configure your Gemini API key in Settings (⚙️) to enable full AI Copilot capability.', content: 'Please configure your Gemini API key in Settings (⚙️) to enable full AI Copilot capability.', specificationVersion: 'v1' });
+      emit('TEXT_MESSAGE_CONTENT', { message_id: msgId, messageId: msgId, id: msgId, delta: noKeyMsg, content: noKeyMsg, specificationVersion: 'v1' });
       emit('TEXT_MESSAGE_END', { message_id: msgId, messageId: msgId, id: msgId, specificationVersion: 'v1' });
     } else {
       const reply = await copilotService.processChat({
@@ -585,8 +693,15 @@ app.all(['/api/copilot', '/api/copilot/*', '/api/copilot/agents/:agent/run', '/a
           specificationVersion: 'v1'
         });
       } else {
+        // Stream reply word-by-word for better UX (perceived responsiveness)
         emit('TEXT_MESSAGE_START', { message_id: msgId, messageId: msgId, id: msgId, role: 'assistant', specificationVersion: 'v1' });
-        emit('TEXT_MESSAGE_CONTENT', { message_id: msgId, messageId: msgId, id: msgId, delta: reply, content: reply, specificationVersion: 'v1' });
+        const words = reply.split(' ');
+        let accumulated = '';
+        for (let i = 0; i < words.length; i++) {
+          const chunk = (i === 0 ? '' : ' ') + words[i];
+          accumulated += chunk;
+          emit('TEXT_MESSAGE_CONTENT', { message_id: msgId, messageId: msgId, id: msgId, delta: chunk, content: accumulated, specificationVersion: 'v1' });
+        }
         emit('TEXT_MESSAGE_END', { message_id: msgId, messageId: msgId, id: msgId, specificationVersion: 'v1' });
       }
     }

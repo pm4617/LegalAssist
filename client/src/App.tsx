@@ -229,8 +229,10 @@ export default function App() {
           defaultOpen={true}
           clickOutsideToClose={!isCopilotPinned}
           labels={{
-            title: 'Legal AI Copilot',
-            initial: 'Hello Advocate! I am your legal drafting copilot. Ask me to draft clauses, fill client details from raw notes, audit statutory requirements, or make revisions in-place.',
+            title: '🏛️ Legal AI Copilot',
+            initial: apiKey
+              ? `👋 Hello Advocate! I am **JurisCopilot** — your AI-powered legal drafting assistant.\n\n**I can help you:**\n\u2022 **Draft & edit** clauses, petitions, affidavits in Marathi & English\n\u2022 **Fill client details** from your raw interview notes\n\u2022 **Translate** documents between Marathi ↔ English\n\u2022 **Audit** statutory compliance (Bombay HC guidelines)\n\u2022 **Insert** standard clauses (alimony waiver, custody, NDA, etc.)\n\nJust type your instruction or click a suggestion below!`
+              : `⚙️ **Gemini API Key not configured.**\n\nTo enable the AI Legal Copilot:\n1. Click **Settings (⚙️)** in the top toolbar\n2. Enter your free Gemini API key from [aistudio.google.com](https://aistudio.google.com/apikey)\n3. Click **Save** — AI Copilot activates instantly\n\nThe **free tier** includes gemini-2.0-flash with 1M token context, sufficient for all legal drafting tasks.`,
           }}
         >
           <LegalWorkspace

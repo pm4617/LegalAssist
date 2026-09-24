@@ -614,14 +614,17 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
         if (!isNaN(pt) && pt > 0) {
           const sel = window.getSelection();
           if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
-            const span = document.createElement('span');
-            span.style.fontSize = `${pt}pt`;
-            try {
-              const range = sel.getRangeAt(0);
-              range.surroundContents(span);
-            } catch {
-              const parent = sel.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3');
-              if (parent) (parent as HTMLElement).style.fontSize = `${pt}pt`;
+            // Use execCommand fontSize as a marker (size 7 = unique), then swap with exact pt span
+            document.execCommand('fontSize', false, '7');
+            const editor = richEditorRef.current;
+            if (editor) {
+              const fontEls = editor.querySelectorAll('font[size="7"]');
+              fontEls.forEach((el) => {
+                const span = document.createElement('span');
+                span.style.fontSize = `${pt}pt`;
+                span.innerHTML = el.innerHTML;
+                el.parentNode?.replaceChild(span, el);
+              });
             }
           } else {
             const parent = sel?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
@@ -1422,46 +1425,36 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                       </select>
 
                       {/* Manual Font Size Input in pt */}
-                      <div className="flex items-center gap-1 bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5" title="Type exact Font Size in pt (e.g. 12, 14, 18)">
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Size:</span>
-                        <input
-                          type="number"
-                          min="6"
-                          max="96"
-                          step="0.5"
-                          defaultValue="12"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              handleExecCommand('fontSizePt', (e.target as HTMLInputElement).value);
-                            }
-                          }}
-                          onBlur={(e) => handleExecCommand('fontSizePt', e.target.value)}
-                          className="w-10 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
-                        />
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">pt</span>
-                        <select
-                          onChange={(e) => {
-                            if (e.target.value) {
-                              const input = e.target.previousElementSibling?.previousElementSibling as HTMLInputElement;
-                              if (input) input.value = e.target.value;
-                              handleExecCommand('fontSizePt', e.target.value);
-                            }
-                          }}
-                          className="bg-transparent text-slate-600 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-1"
-                          defaultValue=""
-                        >
-                          <option value="" disabled>▾</option>
-                          <option value="10">10 pt</option>
-                          <option value="11">11 pt</option>
-                          <option value="12">12 pt (Court Standard)</option>
-                          <option value="14">14 pt</option>
-                          <option value="16">16 pt</option>
-                          <option value="18">18 pt</option>
-                          <option value="24">24 pt</option>
-                          <option value="36">36 pt</option>
-                        </select>
-                      </div>
+                      {/* Font Size Dropdown */}
+                      <select
+                        title="Font Size"
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            handleExecCommand('fontSizePt', e.target.value);
+                          }
+                        }}
+                        className="h-[26px] bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded px-1 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
+                      >
+                        <option value="" disabled>Size</option>
+                        <option value="8">8 pt</option>
+                        <option value="9">9 pt</option>
+                        <option value="10">10 pt</option>
+                        <option value="11">11 pt</option>
+                        <option value="12">12 pt</option>
+                        <option value="13">13 pt</option>
+                        <option value="14">14 pt</option>
+                        <option value="16">16 pt</option>
+                        <option value="18">18 pt</option>
+                        <option value="20">20 pt</option>
+                        <option value="22">22 pt</option>
+                        <option value="24">24 pt</option>
+                        <option value="28">28 pt</option>
+                        <option value="32">32 pt</option>
+                        <option value="36">36 pt</option>
+                        <option value="48">48 pt</option>
+                        <option value="72">72 pt</option>
+                      </select>
 
                       {/* Font Size Increase / Decrease buttons */}
                       <button

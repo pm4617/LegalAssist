@@ -35,6 +35,9 @@ export function formatGeminiErrorMessage(err: any): string {
   if (err?.status === 429 || raw.includes('429') || raw.includes('quota') || raw.includes('RESOURCE_EXHAUSTED')) {
     return 'Gemini API Rate Limit Reached (HTTP 429). Free-tier quota was exceeded. Please try again later or update your API key in Settings (⚙️).';
   }
+  if (err?.status === 503 || raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+    return 'Google Gemini AI is currently experiencing high demand (HTTP 503). This is temporary. Please wait a few seconds and try again.';
+  }
   if (err?.status === 400 || raw.includes('API_KEY_INVALID') || raw.includes('API key not valid')) {
     return 'Invalid Gemini API Key. Please enter a valid Gemini API key in Settings (⚙️).';
   }
@@ -52,12 +55,16 @@ export class CopilotService {
   }
 
   private async generateWithGeminiFallback(client: GoogleGenAI, contents: any, config?: any): Promise<string> {
+    // Free-tier Gemini models (in order of preference)
     const modelsToTry = [
-    'gemini-2.5-flash', // Primary stable Flash model
-    'gemini-2.5-pro',   // High-capability fallback model
-    'gemini-2.0-flash'  // Alternative fast fallback model
-      ];
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash'
+    ];
     let lastError: any = null;
+    let rateLimitError: any = null;
 
     for (const model of modelsToTry) {
       try {
@@ -74,27 +81,46 @@ export class CopilotService {
         const rawMsg = typeof err === 'string' ? err : (err?.message || JSON.stringify(err));
         const status = err?.status || err?.statusCode;
 
+        if (status === 429 || rawMsg.includes('429') || rawMsg.includes('quota') || rawMsg.includes('Rate Limit')) {
+          rateLimitError = err; // Save the rate limit error specifically
+        }
+
         const isRetryable =
           status === 429 ||
           status === 404 ||
           status === 400 ||
+          status === 503 ||
+          status === 502 ||
+          status === 500 ||
           rawMsg.includes('429') ||
           rawMsg.includes('404') ||
           rawMsg.includes('400') ||
+          rawMsg.includes('503') ||
+          rawMsg.includes('502') ||
+          rawMsg.includes('500') ||
           rawMsg.includes('quota') ||
           rawMsg.includes('no longer available') ||
           rawMsg.includes('deprecated') ||
           rawMsg.includes('RESOURCE_EXHAUSTED') ||
           rawMsg.includes('NOT_FOUND') ||
+          rawMsg.includes('UNAVAILABLE') ||
+          rawMsg.includes('overloaded') ||
+          rawMsg.includes('high demand') ||
           rawMsg.includes('not found') ||
           rawMsg.includes('is not supported');
 
         if (isRetryable) {
           console.warn(`Gemini model "${model}" returned error (${status || 'retryable'}), trying fallback model...`);
+          await new Promise(resolve => setTimeout(resolve, 1500));
           continue;
         }
         throw err;
       }
+    }
+
+    // Always prefer throwing the rate limit error so it doesn't get masked by a 404 from a fallback model
+    if (rateLimitError) {
+      throw rateLimitError;
     }
 
     if (lastError?.status === 429 || (lastError?.message && (lastError.message.includes('429') || lastError.message.includes('quota') || lastError.message.includes('RESOURCE_EXHAUSTED')))) {
@@ -109,7 +135,52 @@ export class CopilotService {
 
     const lower = instruction.toLowerCase().trim();
 
-    // 1. Remove / Delete points (points 1 to 10)
+    // 1. Name replacement smart handler (e.g., "change name from Nitin to Amit" or "set complainant's name to Amit Mahajan")
+    const changeNameRegex = /(?:change|replace|update|set)\s+(?:the\s+)?(?:complainant(?:'s)?\s+)?name\s+(?:from\s+([^\s]+)\s+to\s+([^\s\n\.,]+)|to\s+([^\n\.,]+)|with\s+([^\s\n\.,]+))/i;
+    const nameMatch = instruction.match(changeNameRegex);
+
+    if (nameMatch) {
+      let oldName = nameMatch[1]?.trim();
+      let newName = (nameMatch[2] || nameMatch[3] || nameMatch[4])?.trim();
+
+      if (!oldName && (lower.includes('nitin') || html.includes('Nitin') || html.includes('नितीन'))) {
+        oldName = lower.includes('nitin') ? 'Nitin' : 'नितीन';
+      }
+
+      if (newName) {
+        let updated = html;
+        if (oldName) {
+          const re = new RegExp(oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+          updated = html.replace(re, newName);
+        } else {
+          // Replace placeholders or existing applicant/complainant name
+          updated = html
+            .replace(/(तक्रारदार\s+)([A-Za-z0-9_\u0900-\u097F\s]{2,30})/gi, `$1${newName}`)
+            .replace(/(Petitioner\s*\/\s*Applicant\s*\n+)([A-Za-z\s]+)/gi, `$2\n... Petitioner / Applicant`)
+            .replace(/____________________/g, newName);
+        }
+
+        if (updated !== html) {
+          return `I have updated the name${oldName ? ` from ${oldName}` : ''} to ${newName} in your legal document.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+        }
+      }
+    }
+
+    // Direct string replace fallback if instruction has "from X to Y"
+    if (lower.includes('from') && lower.includes('to')) {
+      const ftMatch = instruction.match(/from\s+([^\s]+)\s+to\s+([^\s\n\.,]+)/i);
+      if (ftMatch && ftMatch[1] && ftMatch[2]) {
+        const fromStr = ftMatch[1].trim();
+        const toStr = ftMatch[2].trim();
+        const re = new RegExp(fromStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        const updated = html.replace(re, toStr);
+        if (updated !== html) {
+          return `I have updated the name from ${fromStr} to ${toStr} in your legal document.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+        }
+      }
+    }
+
+    // 2. Remove / Delete points (points 1 to 10)
     if (lower.includes('remove') || lower.includes('delete') || lower.includes('कमी करा') || lower.includes('काढा')) {
       const matchPoint = (numStr: string, marathiNum: string, ordinals: string[]) => {
         return ordinals.some((ord) => lower.includes(ord)) || lower.includes(`point ${numStr}`) || lower.includes(marathiNum) || lower.includes(` ${numStr}`);
@@ -137,7 +208,7 @@ export class CopilotService {
       }
     }
 
-    // 2. Bold / Format points (points 1 to 10 or general bolding)
+    // 3. Bold / Format points (points 1 to 10 or general bolding)
     if (lower.includes('bold') || lower.includes('ठळक') || lower.includes('बोल्ड')) {
       let numToBold = '2';
       let marathiNum = '२';
@@ -167,7 +238,7 @@ export class CopilotService {
       return `I have updated your legal document and applied bold formatting.\n\n[REVISED_DOCUMENT_START]\n${genericUpdated.trim()}\n[REVISED_DOCUMENT_END]`;
     }
 
-    // 3. Document Translation fallback
+    // 4. Document Translation fallback
     if (lower.includes('convert') || lower.includes('translate') || lower.includes('english') || lower.includes('marathi') || lower.includes('मराठी')) {
       const targetLang: 'en' | 'mr' = (lower.includes('marathi') || lower.includes('मराठी')) ? 'mr' : 'en';
       const translated = this.localTranslateHtml(html, targetLang);
@@ -175,7 +246,7 @@ export class CopilotService {
       return `I have translated your active legal document into formal ${langName}.\n\n[REVISED_DOCUMENT_START]\n${translated}\n[REVISED_DOCUMENT_END]`;
     }
 
-    // 4. Default fallback wrapper for any active document edit instruction
+    // 5. Default fallback wrapper for any active document edit instruction
     return `I have updated your legal document as requested.\n\n[REVISED_DOCUMENT_START]\n${html.trim()}\n[REVISED_DOCUMENT_END]`;
   }
 
@@ -183,7 +254,35 @@ export class CopilotService {
     const { message, context, apiKey } = options;
     const lower = message.toLowerCase();
 
-    // Check if the user is asking to translate / convert document
+    // Shortcut: Audit / Compliance check
+    const isAuditCmd = lower.includes('audit') || lower.includes('compliance') ||
+      lower.includes('check') && (lower.includes('bomba') || lower.includes('hc') || lower.includes('high court') || lower.includes('mandatory')) ||
+      lower.includes('missing') && lower.includes('clause');
+
+    if (isAuditCmd && context.documentBody) {
+      try {
+        const auditResult = await this.aiAuditDocument({
+          templateTitle: context.templateTitle || 'Legal Document',
+          documentBody: context.documentBody,
+          facts: context.clientFacts || {},
+          statutoryRequirements: [],
+          apiKey: apiKey || ''
+        });
+        const lines: string[] = [];
+        lines.push(`## 🔍 AI Compliance Audit — ${context.templateTitle || 'Legal Document'}`);
+        lines.push(`**Score: ${auditResult.score}/100**`);
+        lines.push(`\n${auditResult.summary}`);
+        if (auditResult.passed?.length) lines.push(`\n### ✅ Passed\n${auditResult.passed.map(p => `• ${p}`).join('\n')}`);
+        if (auditResult.warnings?.length) lines.push(`\n### ⚠️ Warnings\n${auditResult.warnings.map(w => `• ${w}`).join('\n')}`);
+        if (auditResult.failed?.length) lines.push(`\n### ❌ Missing / Failed\n${auditResult.failed.map(f => `• ${f}`).join('\n')}`);
+        return lines.join('\n');
+      } catch (err: any) {
+        // Fall through to Gemini chat if audit fails
+        console.warn('Audit shortcut failed, falling through to chat:', err?.message);
+      }
+    }
+
+    // Shortcut: Translation
     const isTranslateCmd = (lower.includes('convert') || lower.includes('translate') || lower.includes('rewrite')) &&
       (lower.includes('english') || lower.includes('marathi') || lower.includes('मराठी') || lower.includes('document') || lower.includes('draft'));
 
@@ -199,13 +298,15 @@ export class CopilotService {
         return `I have translated your active legal document using Gemini AI into formal ${langName}.\n\n[REVISED_DOCUMENT_START]\n${translated}\n[REVISED_DOCUMENT_END]`;
       } catch (err: any) {
         const exactError = formatGeminiErrorMessage(err);
-        if (context.documentBody) {
+        const isRateLimit = exactError.includes('429') || exactError.includes('quota') || exactError.includes('Rate Limit');
+
+        if (!isRateLimit && context.documentBody) {
           const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody);
           if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]')) {
             return `⚠️ Gemini AI Translation Error: ${exactError}\n\nApplied local translation fallback instead:\n\n${localEdit}`;
           }
         }
-        return `⚠️ Gemini 3.7 Flash Translation Error: ${exactError}. Please check your Gemini API key in Settings (⚙️).`;
+        return `⚠️ Gemini Translation Error: ${exactError}`;
       }
     }
 
@@ -222,46 +323,58 @@ export class CopilotService {
     }
 
     try {
-      const systemPrompt = `You are JurisCopilot, an expert AI Legal Assistant powered by Gemini AI embedded in an interactive legal drafting studio.
-You assist advocates and lawyers with drafting court petitions, affidavits, contracts, and notices in Marathi (Devanagari) and English.
-You have direct read and write awareness of the lawyer's ACTIVE WORKING DOCUMENT:
-- Active Template Title: ${context.templateTitle || 'Active Legal Document'}
-- Active Document Body HTML:
-${context.documentBody ? context.documentBody : '(empty)'}
-- Active Client & Case Facts: ${JSON.stringify(context.clientFacts || {})}
+      // Trim documentBody to reduce token usage (important for free-tier quota)
+      const docBodyForPrompt = context.documentBody
+        ? context.documentBody.substring(0, 6000)
+        : '(empty)';
 
-MANDATORY DOCUMENT EDITING & FORMATTING INSTRUCTIONS:
-Whenever the user instructs you to edit, format, bold, italicize, underline, align, update, rewrite, translate, convert, rephrase, or insert clauses/text in the document (e.g. "remove 1st point", "Make point 2 bold", "bold heading", "underline paragraph 1", "change date"):
-1. CRITICAL DOCUMENT TYPE CONSTRAINTS: You MUST modify the active working document provided above under 'Active Document Body HTML' (${context.templateTitle || 'Active Legal Document'}). DO NOT replace the active document with a Divorce Petition, Legal Notice, or any other document type unless the user explicitly asks to draft a new type of document!
-2. PRESERVE ALL REAL CLIENT FACTS: Retain all actual names, dates, addresses, court names, amounts, and details currently present in 'Active Document Body HTML'. DO NOT replace real names or facts with generic placeholders like [पतीचे नाव], [पत्नीचे नाव], or [पत्ता].
-3. Output a brief 1-sentence confirmation message, followed IMMEDIATELY by the complete updated HTML document enclosed between [REVISED_DOCUMENT_START] and [REVISED_DOCUMENT_END] delimiters.
-   Example output structure:
-   I have updated your legal document and applied bold formatting to Point 2.
+      const systemPrompt = `You are JurisCopilot, an expert AI Legal Assistant for Indian court petitions and agreements.
+Active template: ${context.templateTitle || 'Legal Document'}
+Document (HTML):
+${docBodyForPrompt}
+Client Facts: ${JSON.stringify(context.clientFacts || {}).substring(0, 800)}
 
-   [REVISED_DOCUMENT_START]
-   <p style="text-align: center;"><b>...</b></p>
-   <p>२) <b>Second point in bold...</b></p>
-   [REVISED_DOCUMENT_END]
-4. PRESERVE ALL HTML tags (<p style="...">, <b>, <u>, line breaks, alignments, page break dividers) in the rest of the document EXACTLY. Do not strip HTML formatting.
-5. STRICT TEMPLATE STRUCTURE & FORMATTING PRESERVATION: You MUST strictly maintain 100% of the format, clause numbering, headings, and legal structure as present in the selected template (${context.templateTitle || 'Active Legal Document'}). Do NOT add unapproved disclaimers, extra legal notes, or new unrequested clauses. Do NOT delete existing template sections or clauses unless the user explicitly requests it. ONLY dynamic data (facts/placeholders) or specifically requested edits shall get changed. No unwanted formatting changes!
-6. If drafting in Marathi for Maharashtra courts (e.g. Jalgaon, Amalner, Dhule), use standard court terminology relevant to the active document type (${context.templateTitle || 'Active Legal Document'}).`;
+DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/format/bold/change names):
+1. Keep the same template type always
+2. Apply ALL edits to the document HTML provided above
+3. PRESERVE all HTML tags, styles (p, b, u, span), page breaks, and alignments exactly
+4. Return: one brief confirmation sentence, then IMMEDIATELY the full updated HTML between these delimiters:
+[REVISED_DOCUMENT_START]
+<complete updated HTML here>
+[REVISED_DOCUMENT_END]
+5. CRITICAL: NEVER output empty delimiters. If you make no changes, do NOT use [REVISED_DOCUMENT_START]. If you use it, you MUST output the full 100% complete HTML document inside. DO NOT TRUNCATE.
+6. Use formal Maharashtra court Marathi terminology for Marathi documents
+7. Do NOT add unsolicited clauses or change template structure`;
 
       const text = await this.generateWithGeminiFallback(client, [
-        { role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Question/Instruction: ${message}` }] }
+        { role: 'user', parts: [{ text: `${systemPrompt}\n\nInstruction: ${message}` }] }
       ]);
 
       if (text) {
+        if (text.includes('[REVISED_DOCUMENT_START]') && text.includes('[REVISED_DOCUMENT_END]')) {
+          const match = text.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
+          if (match && match[1].trim().length < 100) {
+            console.warn('Gemini returned an empty/truncated document! Falling back.');
+            const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody || '');
+            if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]')) return localEdit;
+            return '⚠️ The AI attempted to edit the document but failed to generate the full HTML safely due to output constraints. Please make this structural edit manually.';
+          }
+        }
         return text;
       }
     } catch (err: any) {
       const exactError = formatGeminiErrorMessage(err);
-      if (context.documentBody) {
+
+      // Do not apply local fallback for rate limit / quota errors as requested by user
+      const isRateLimit = exactError.includes('429') || exactError.includes('quota') || exactError.includes('Rate Limit');
+
+      if (!isRateLimit && context.documentBody) {
         const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody);
         if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]')) {
           return `⚠️ Gemini AI Error: ${exactError}\n\nApplied local smart edit fallback instead:\n\n${localEdit}`;
         }
       }
-      return `⚠️ Gemini AI Execution Error: ${exactError}. Please check your Gemini API key settings in Settings (⚙️).`;
+      return `⚠️ Gemini AI Execution Error: ${exactError}`;
     }
 
     if (context.documentBody) {
@@ -524,14 +637,13 @@ Return ONLY valid JSON.
 Raw Notes:
 ${rawNotes}`;
 
-        const response = await client.models.generateContent({
-          model: 'gemini-3.7-flash',
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          config: { responseMimeType: 'application/json' }
-        });
+        const textResp = await this.generateWithGeminiFallback(client,
+          [{ role: 'user', parts: [{ text: prompt }] }],
+          { responseMimeType: 'application/json' }
+        );
 
-        if (response.text) {
-          const parsed = JSON.parse(response.text);
+        if (textResp) {
+          const parsed = JSON.parse(textResp);
           return {
             facts: parsed,
             summary: `Successfully extracted ${Object.keys(parsed).length} fields from notes.`
@@ -728,13 +840,12 @@ Examples:
 
 Text to transliterate: "${text}"`;
 
-        const response = await client.models.generateContent({
-          model: 'gemini-3.7-flash',
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        });
+        const textResp = await this.generateWithGeminiFallback(client,
+          [{ role: 'user', parts: [{ text: prompt }] }]
+        );
 
-        if (response.text) {
-          const cleaned = response.text.trim().replace(/^["'«»]|["'«»]$/g, '');
+        if (textResp) {
+          const cleaned = textResp.trim().replace(/^["'«»]|["'«»]$/g, '');
           if (cleaned.length > 0) return cleaned;
         }
       } catch (err: any) {
@@ -834,6 +945,221 @@ Text to transliterate: "${text}"`;
     result = result.replace(/[0-9]/g, (d) => digitMap[d] || d);
 
     return result;
+  }
+
+  /**
+   * Generates 4 context-aware suggested chat prompts for the CopilotKit sidebar
+   * based on the active template, document body, and client facts.
+   * Uses gemini-2.0-flash (free tier). Returns empty array on any error.
+   */
+  async generateSuggestions(options: {
+    templateTitle: string;
+    documentBody: string;
+    facts: Record<string, any>;
+    apiKey: string;
+  }): Promise<string[]> {
+    const { templateTitle, documentBody, facts, apiKey } = options;
+
+    const client = this.getClient(apiKey);
+    if (!client) return this.fallbackSuggestions(templateTitle);
+
+    const hasDoc = documentBody && documentBody.trim().length > 50;
+    const factsJson = JSON.stringify(facts || {});
+
+    const prompt = `You are a legal AI assistant. Based on the current state of a lawyer's drafting session, generate exactly 4 short, actionable suggested chat messages the lawyer might want to send.
+
+Active Template: "${templateTitle}"
+Has Document Content: ${hasDoc ? 'Yes' : 'No (empty)'}
+Client Facts (partial): ${factsJson.substring(0, 300)}
+
+Rules:
+- Each suggestion must be a direct instruction or question (1 sentence, max 10 words)
+- Cover different actions: fill details, audit, insert clause, translate
+- Use the template context (e.g. for divorce: alimony, custody, pregnancy clause)
+- Return ONLY a JSON array of 4 strings, no explanation
+
+Example format:
+["Fill client details from my notes", "Audit this draft for Bombay HC compliance", "Add alimony waiver clause", "Translate document to English"]`;
+
+    try {
+      const textResp = await this.generateWithGeminiFallback(client,
+        [{ role: 'user', parts: [{ text: prompt }] }],
+        { responseMimeType: 'application/json' }
+      );
+
+      if (textResp) {
+        const parsed = JSON.parse(textResp);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.slice(0, 5).map((s: any) => String(s));
+        }
+      }
+    } catch (err: any) {
+      console.warn('generateSuggestions Gemini error:', err?.message);
+    }
+
+    return this.fallbackSuggestions(templateTitle);
+  }
+
+  private fallbackSuggestions(templateTitle: string): string[] {
+    const lower = (templateTitle || '').toLowerCase();
+    if (lower.includes('divorce') || lower.includes('घटस्फोट')) {
+      return [
+        'Fill client details from my interview notes',
+        'Add alimony waiver clause to the petition',
+        'Check Bombay HC mandatory compliance clauses',
+        'Translate this petition to English'
+      ];
+    }
+    if (lower.includes('nda') || lower.includes('agreement') || lower.includes('contract')) {
+      return [
+        'Draft a strong confidentiality clause',
+        'Add governing law and jurisdiction clause',
+        'Summarize key obligations of both parties',
+        'Translate this agreement to Marathi'
+      ];
+    }
+    if (lower.includes('affidavit') || lower.includes('प्रतिज्ञा')) {
+      return [
+        'Fill applicant details from my notes',
+        'Add verification and deponent declaration',
+        'Audit this affidavit for notary requirements',
+        'Translate to English'
+      ];
+    }
+    return [
+      'Fill client details from my notes',
+      'Audit this document for compliance',
+      'Suggest a relevant legal clause to add',
+      'Translate document to English'
+    ];
+  }
+
+  /**
+   * AI-powered statutory compliance audit using Gemini 2.0 Flash.
+   * Returns structured { passed, warnings, failed, summary } result.
+   */
+  async aiAuditDocument(options: {
+    templateTitle: string;
+    documentBody: string;
+    facts: Record<string, any>;
+    statutoryRequirements: string[];
+    apiKey: string;
+  }): Promise<{
+    passed: string[];
+    warnings: string[];
+    failed: string[];
+    summary: string;
+    score: number;
+  }> {
+    const { templateTitle, documentBody, facts, statutoryRequirements, apiKey } = options;
+
+    const client = this.getClient(apiKey);
+    if (!client) {
+      return {
+        passed: [],
+        warnings: ['AI audit unavailable — Gemini API key not configured.'],
+        failed: [],
+        summary: 'Configure Gemini API key in Settings to enable AI audit.',
+        score: 0
+      };
+    }
+
+    const reqsText = statutoryRequirements.length > 0
+      ? statutoryRequirements.map((r, i) => `${i + 1}. ${r}`).join('\n')
+      : 'No explicit statutory requirements specified.';
+
+    const prompt = `You are an expert Indian court legal compliance auditor. Audit the following legal document for statutory compliance and mandatory clause completeness.
+
+Template: "${templateTitle}"
+Statutory Requirements:
+${reqsText}
+
+Document (HTML stripped):
+${documentBody.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 3000)}
+
+Task: Audit the document and return a JSON object with:
+{
+  "passed": ["list of compliance items that are satisfied"],
+  "warnings": ["list of items present but may need review"],
+  "failed": ["list of missing mandatory items"],
+  "summary": "1-2 sentence overall assessment",
+  "score": <integer 0-100 compliance score>
+}
+
+Be specific. Check for: party names, dates, jurisdiction, mandatory declarations (non-pregnancy, separation period, waiver clauses), court details, signatures/affirmations.
+Return ONLY valid JSON.`;
+
+    try {
+      const textResp = await this.generateWithGeminiFallback(client,
+        [{ role: 'user', parts: [{ text: prompt }] }],
+        { responseMimeType: 'application/json' }
+      );
+
+      if (textResp) {
+        const parsed = JSON.parse(textResp);
+        return {
+          passed: Array.isArray(parsed.passed) ? parsed.passed : [],
+          warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+          failed: Array.isArray(parsed.failed) ? parsed.failed : [],
+          summary: typeof parsed.summary === 'string' ? parsed.summary : 'Audit complete.',
+          score: typeof parsed.score === 'number' ? Math.max(0, Math.min(100, parsed.score)) : 50
+        };
+      }
+    } catch (err: any) {
+      console.warn('aiAuditDocument Gemini error:', err?.message);
+    }
+
+    return {
+      passed: [],
+      warnings: ['AI audit could not complete due to a Gemini API error.'],
+      failed: [],
+      summary: 'Please try again or check your Gemini API key.',
+      score: 0
+    };
+  }
+
+  async checkGrammar(options: { documentBody: string; templateTitle?: string; apiKey?: string }): Promise<string> {
+    const { documentBody, templateTitle, apiKey } = options;
+    const client = this.getClient(apiKey);
+    if (!client) throw new Error('Gemini API key is missing');
+
+    const prompt = `You are a formal Marathi legal grammar and style checker.
+Review the following HTML legal document (Template: ${templateTitle || 'Legal Document'}).
+Correct any grammatical errors, spelling mistakes, and ensure court-approved formal Marathi (Devanagari) register is used.
+
+CRITICAL REQUIREMENT: For EVERY single word or phrase that you change, correct, or add, you MUST wrap it in a <mark class="grammar-highlight"> tag so the user can see what was changed. 
+For example: if you change "नितिन" to "नितीन", output <mark class="grammar-highlight">नितीन</mark>.
+
+Return ONLY the corrected HTML document. DO NOT wrap it in markdown block quotes. Preserve all HTML tags perfectly.
+
+Document:
+${documentBody}`;
+
+    const text = await this.generateWithGeminiFallback(client, [{ role: 'user', parts: [{ text: prompt }] }]);
+    if (text) {
+      return text.replace(/```html|```/g, '').trim();
+    }
+    throw new Error('Failed to generate grammar check');
+  }
+
+  async draftClause(options: { prompt: string; templateTitle?: string; apiKey?: string }): Promise<string> {
+    const { prompt, templateTitle, apiKey } = options;
+    const client = this.getClient(apiKey);
+    if (!client) throw new Error('Gemini API key is missing');
+
+    const systemPrompt = `You are an expert Indian advocate drafting formal Marathi legal clauses.
+Template context: ${templateTitle || 'Legal Document'}
+The user wants to draft a new clause based on this description: "${prompt}"
+
+Generate the legal clause in formal Marathi (Devanagari).
+Return ONLY the raw HTML paragraph(s). For example: <p><b>Clause Title:</b> clause text in marathi...</p>
+Do not include any explanation or markdown formatting.`;
+
+    const text = await this.generateWithGeminiFallback(client, [{ role: 'user', parts: [{ text: systemPrompt }] }]);
+    if (text) {
+      return text.replace(/```html|```/g, '').trim();
+    }
+    throw new Error('Failed to draft clause');
   }
 }
 

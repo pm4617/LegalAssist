@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, Sparkles, FileText, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Sparkles, FileText, Loader2, Mic, MicOff } from 'lucide-react';
 import { LegalTemplate, ClientFacts } from '../types';
 import { convertToDevanagari } from '../utils/transliterate';
 
@@ -115,6 +115,8 @@ Details: Sample raw interview details for ${template.title || 'legal draft'}.`;
 
   const [notes, setNotes] = useState<string>(() => getDefaultNotes(activeTemplate, facts));
   const [isTransliterating, setIsTransliterating] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
   // Update default notes whenever active template changes or modal opens
   useEffect(() => {
@@ -162,6 +164,55 @@ Details: Sample raw interview details for ${template.title || 'legal draft'}.`;
     }
   };
 
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsRecording(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Sorry, your browser doesn't support voice dictation. Please try Chrome or Edge.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'mr-IN'; // Set language to Marathi (India)
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+    };
+
+    recognition.onresult = (event: any) => {
+      let finalTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript + '\n';
+        }
+      }
+      if (finalTranscript) {
+        setNotes((prev) => (prev ? prev + '\n' + finalTranscript.trim() : finalTranscript.trim()));
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error', event.error);
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
   const handleExtract = async () => {
     if (!notes.trim()) return;
     await onExtract(notes);
@@ -197,15 +248,30 @@ Details: Sample raw interview details for ${template.title || 'legal draft'}.`;
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
                 Raw Interview Notes / Key-Value Details
               </label>
-              <button
-                type="button"
-                onClick={handleTransliterateNotesValues}
-                disabled={isTransliterating || !notes.trim()}
-                className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
-                title="Convert values (after ':') to Marathi Devanagari"
-              >
-                {isTransliterating ? '...' : 'म'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleToggleRecording}
+                  className={`text-[11px] px-2 py-1 rounded-lg font-bold shadow-sm transition flex items-center gap-1 cursor-pointer ${
+                    isRecording 
+                      ? 'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/50 dark:text-rose-300 dark:border-rose-700/60 animate-pulse'
+                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:hover:bg-emerald-900 dark:text-emerald-300 dark:border-emerald-700/60'
+                  }`}
+                  title={isRecording ? "Stop dictation" : "Dictate in Marathi (मराठीत बोला)"}
+                >
+                  {isRecording ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                  {isRecording ? 'Listening...' : 'Voice Dictate (MR)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTransliterateNotesValues}
+                  disabled={isTransliterating || !notes.trim()}
+                  className="text-[11px] px-1.5 py-0.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 disabled:opacity-40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700/60 rounded font-bold font-marathi shadow-sm transition flex items-center gap-1 cursor-pointer"
+                  title="Convert values (after ':') to Marathi Devanagari"
+                >
+                  {isTransliterating ? '...' : 'म'}
+                </button>
+              </div>
             </div>
 
             <textarea

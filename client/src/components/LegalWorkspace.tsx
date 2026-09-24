@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useCopilotReadable, useCopilotAction } from '@copilotkit/react-core';
+import { useCopilotChatSuggestions } from '@copilotkit/react-ui';
 import {
   Scale,
   FileText,
@@ -47,6 +48,7 @@ import {
   PanelLeft,
   Menu,
   Wand2,
+  Eraser,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
@@ -264,7 +266,11 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     return curr;
   };
 
-  const replacePlaceholdersInHtml = (htmlText: string, currentFacts: ClientFacts): string => {
+  const replacePlaceholdersInHtml = (
+    htmlText: string,
+    currentFacts: ClientFacts,
+    tmpl?: LegalTemplate
+  ): string => {
     if (!htmlText) return '';
     let result = htmlText;
 
@@ -277,9 +283,11 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       }
     }
 
+    const effTmpl = tmpl || activeTemplate;
+
     // Default court fallbacks
     if (!factsMap.courtName) {
-      factsMap.courtName = currentFacts?.courtName || activeTemplate?.defaultCourt || 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर';
+      factsMap.courtName = currentFacts?.courtName || effTmpl?.defaultCourt || 'मे. दिवाणी न्यायाधीश वरिष्ठ स्तर';
     }
     if (!factsMap.courtCity) {
       factsMap.courtCity = currentFacts?.courtCity || 'अमळनेर';
@@ -301,12 +309,12 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     return result;
   };
 
-  const formatDocToHtml = (rawText: string): string => {
+  const formatDocToHtml = (rawText: string, tmpl?: LegalTemplate): string => {
     if (!rawText) return '';
     let html = unescapeAllEntities(rawText);
 
     // Live replace all placeholders in HTML (courtName, courtCity, etc.)
-    html = replacePlaceholdersInHtml(html, facts);
+    html = replacePlaceholdersInHtml(html, facts, tmpl);
 
     // Standardize all page break syntax (markdown [page-break], html comments, hr tags) to visual page break div
     html = html
@@ -347,20 +355,29 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   // Auto-intercept REVISED_DOCUMENT_START markers in Copilot sidebar DOM to guarantee instant UI update
   useEffect(() => {
     const observer = new MutationObserver(() => {
-      const copilotContainer = document.querySelector('.copilotKitSidebar') || document.querySelector('.copilotKitWindow') || document.body;
+      const copilotContainer =
+        document.querySelector('.copilotKitSidebar') ||
+        document.querySelector('.copilotKitWindow') ||
+        document.body;
       if (!copilotContainer) return;
 
-      const containerNodes = copilotContainer.querySelectorAll('.copilotKitMessage, [class*="Message"], [class*="message"], div');
+      const containerNodes = copilotContainer.querySelectorAll(
+        '.copilotKitMessage, [class*="Message"], [class*="message"], code, pre'
+      );
       containerNodes.forEach((node) => {
-        const text = node.textContent || '';
-        if (text.includes('[REVISED_DOCUMENT_START]') && text.includes('[REVISED_DOCUMENT_END]')) {
-          const match = text.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
+        let rawContent = node.innerHTML || node.textContent || '';
+        rawContent = unescapeAllEntities(rawContent);
+
+        if (rawContent.includes('[REVISED_DOCUMENT_START]') && rawContent.includes('[REVISED_DOCUMENT_END]')) {
+          const match = rawContent.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
           if (match && match[1]) {
-            const rawHtml = match[1].trim();
-            const revisedHtml = unescapeAllEntities(rawHtml);
+            let revisedHtml = match[1].trim();
+            revisedHtml = revisedHtml.replace(/^<code>|<\/code>$/gi, '').trim();
+            revisedHtml = unescapeAllEntities(revisedHtml);
+
             setDocumentBody((prev) => {
               if (prev !== revisedHtml) {
-                console.log('✅ Auto-synchronized updated document draft from Copilot chat into editor!');
+                console.log('✅ Auto-synchronized formatted document draft from Copilot chat into editor!');
                 return revisedHtml;
               }
               return prev;
@@ -385,14 +402,18 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         if (!isNaN(pt) && pt > 0) {
           const sel = window.getSelection();
           if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
-            const span = document.createElement('span');
-            span.style.fontSize = `${pt}pt`;
-            try {
-              const range = sel.getRangeAt(0);
-              range.surroundContents(span);
-            } catch {
-              const parent = sel.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3');
-              if (parent) (parent as HTMLElement).style.fontSize = `${pt}pt`;
+            // Use execCommand fontSize (1-7 scale) as a marker, then replace with exact pt size
+            document.execCommand('fontSize', false, '7');
+            const editor = docRichEditorRef.current;
+            if (editor) {
+              // Find all font elements with size="7" just inserted and replace with span style
+              const fontEls = editor.querySelectorAll('font[size="7"]');
+              fontEls.forEach((el) => {
+                const span = document.createElement('span');
+                span.style.fontSize = `${pt}pt`;
+                span.innerHTML = el.innerHTML;
+                el.parentNode?.replaceChild(span, el);
+              });
             }
           } else {
             const parent = sel?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
@@ -613,6 +634,21 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   const [activeDraftId, setActiveDraftId] = useState<string>('');
   const [isNewDraftModalOpen, setIsNewDraftModalOpen] = useState<boolean>(false);
   const [isWizardOpen, setIsWizardOpen] = useState<boolean>(false);
+  const isSwitchingRef = useRef<boolean>(false);
+
+  const saveDraftToBackend = (draft: DocumentDraft) => {
+    fetch('/api/drafts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    }).catch((e) => console.error('Failed to save draft to backend:', e));
+  };
+
+  const deleteDraftFromBackend = (id: string) => {
+    fetch(`/api/drafts/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }).catch((e) => console.error('Failed to delete draft from backend:', e));
+  };
 
   // Sync server & telegram drafts live
   useEffect(() => {
@@ -713,38 +749,88 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     return '';
   };
 
+  const switchDraft = (draftId: string, targetTmpl?: LegalTemplate) => {
+    const target = drafts.find((d) => d.id === draftId);
+    if (target) {
+      isSwitchingRef.current = true;
+      setActiveDraftId(target.id);
+      setFacts(target.facts || {});
+
+      const tmpl = targetTmpl || templates.find((t) => t.id === target.templateId) || activeTemplate;
+      let bodyToSet = target.documentBody || '';
+      if ((!bodyToSet || (tmpl && target.templateId !== tmpl.id)) && tmpl) {
+        bodyToSet = replacePlaceholdersInHtml(tmpl.templateText || '', target.facts || {}, tmpl);
+      }
+
+      setDocumentBody(bodyToSet);
+
+      if (docRichEditorRef.current && docEditorMode === 'visual') {
+        docRichEditorRef.current.innerHTML = formatDocToHtml(bodyToSet, tmpl);
+      }
+
+      setTimeout(() => {
+        isSwitchingRef.current = false;
+      }, 100);
+    }
+  };
+
   // Ensure active draft exists when selected template changes
   useEffect(() => {
-    if (!selectedTemplateId) return;
+    if (!selectedTemplateId || templates.length === 0) return;
+
+    const targetTemplate = templates.find((t) => t.id === selectedTemplateId);
+    if (!targetTemplate) return;
 
     const existingForTemplate = drafts.filter((d) => d.templateId === selectedTemplateId);
 
     if (existingForTemplate.length === 0) {
+      isSwitchingRef.current = true;
       const newId = `draft_${Date.now()}`;
-      const partyName = getDraftPartyName(facts, activeTemplate?.fields);
+
+      // Initialize fresh facts for new template
+      const freshFacts: ClientFacts = {};
+      if (facts.advocateName) freshFacts.advocateName = facts.advocateName;
+      if (facts.advocateAddress) freshFacts.advocateAddress = facts.advocateAddress;
+      if (facts.advocateParty1) freshFacts.advocateParty1 = facts.advocateParty1;
+      if (facts.courtCity) freshFacts.courtCity = facts.courtCity;
+      if (facts.courtName) freshFacts.courtName = facts.courtName;
+
+      if (targetTemplate.fields) {
+        targetTemplate.fields.forEach((f) => {
+          (freshFacts as any)[f.key] = f.defaultValue !== undefined ? f.defaultValue : '';
+        });
+      }
+
+      const partyName = getDraftPartyName(freshFacts, targetTemplate.fields);
+      const initialBody = replacePlaceholdersInHtml(targetTemplate.templateText || '', freshFacts, targetTemplate);
       const initialDraft: DocumentDraft = {
         id: newId,
         name: partyName ? `Draft #1 (${partyName})` : `Draft #1`,
         templateId: selectedTemplateId,
-        facts: { ...facts },
-        documentBody: '',
+        facts: freshFacts,
+        documentBody: initialBody,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       setDrafts((prev) => [...prev, initialDraft]);
       setActiveDraftId(newId);
-    } else {
-      const active = existingForTemplate.find((d) => d.id === activeDraftId);
-      if (!active) {
-        const first = existingForTemplate[0];
-        setActiveDraftId(first.id);
-        setFacts(first.facts);
-        if (first.documentBody) {
-          setDocumentBody(replacePlaceholdersInHtml(first.documentBody, first.facts));
-        }
+      setFacts(freshFacts);
+      setDocumentBody(initialBody);
+
+      if (docRichEditorRef.current && docEditorMode === 'visual') {
+        docRichEditorRef.current.innerHTML = formatDocToHtml(initialBody, targetTemplate);
       }
+
+      saveDraftToBackend(initialDraft);
+
+      setTimeout(() => {
+        isSwitchingRef.current = false;
+      }, 100);
+    } else {
+      const activeForNewTemplate = existingForTemplate.find((d) => d.id === activeDraftId) || existingForTemplate[0];
+      switchDraft(activeForNewTemplate.id, targetTemplate);
     }
-  }, [selectedTemplateId]);
+  }, [selectedTemplateId, templates]);
 
   // Persist drafts array in localStorage
   useEffect(() => {
@@ -757,7 +843,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
   // Auto-sync active draft's facts & documentBody whenever facts or documentBody change
   useEffect(() => {
-    if (!activeDraftId) return;
+    if (!activeDraftId || isSwitchingRef.current) return;
     setDrafts((prev) =>
       prev.map((d) => {
         if (d.id === activeDraftId) {
@@ -775,35 +861,30 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           delete (cleanFacts as any).updatedAt;
           delete (cleanFacts as any).template;
 
-          return {
+          const updatedDraft: DocumentDraft = {
             ...d,
-            id: d.id,
-            templateId: d.templateId,
             name: displayName,
             facts: cleanFacts,
             documentBody,
             updatedAt: new Date().toISOString(),
           };
+
+          saveDraftToBackend(updatedDraft);
+          return updatedDraft;
         }
         return d;
       })
     );
   }, [facts, documentBody, activeDraftId, activeTemplate]);
 
-  const switchDraft = (draftId: string) => {
-    const target = drafts.find((d) => d.id === draftId);
-    if (target) {
-      setActiveDraftId(target.id);
-      setFacts(target.facts);
-      if (target.documentBody) {
-        setDocumentBody(replacePlaceholdersInHtml(target.documentBody, target.facts));
-      }
-    }
-  };
-
-  const handleCreateNewDraft = (mode: 'duplicate' | 'fresh') => {
+  const handleCreateNewDraft = (
+    mode: 'duplicate' | 'fresh' = 'fresh',
+    customPartyName?: string,
+    initialBodyText?: string
+  ) => {
     if (!selectedTemplateId || !activeTemplate) return;
 
+    isSwitchingRef.current = true;
     const count = currentTemplateDrafts.length + 1;
     const newId = `draft_${Date.now()}`;
 
@@ -812,7 +893,6 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       newFacts = { ...facts };
     } else {
       const freshFacts: ClientFacts = {};
-      // Preserve default advocate & court defaults if present
       if (facts.advocateName) freshFacts.advocateName = facts.advocateName;
       if (facts.advocateAddress) freshFacts.advocateAddress = facts.advocateAddress;
       if (facts.advocateParty1) freshFacts.advocateParty1 = facts.advocateParty1;
@@ -824,16 +904,26 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
           (freshFacts as any)[f.key] = f.defaultValue !== undefined ? f.defaultValue : '';
         });
       }
+      if (customPartyName) {
+        freshFacts.party1Name = customPartyName;
+      }
       newFacts = freshFacts;
     }
 
-    const partyName = getDraftPartyName(newFacts, activeTemplate.fields);
+    const partyName = customPartyName || getDraftPartyName(newFacts, activeTemplate.fields);
+    const displayName = partyName ? `Draft #${count} (${partyName})` : `Draft #${count}`;
+
+    const bodyToUse =
+      initialBodyText !== undefined && initialBodyText !== null && initialBodyText.trim().length > 0
+        ? initialBodyText
+        : replacePlaceholdersInHtml(activeTemplate.templateText || '', newFacts);
+
     const newDraft: DocumentDraft = {
       id: newId,
-      name: partyName ? `Draft #${count} (${partyName})` : `Draft #${count}`,
+      name: displayName,
       templateId: selectedTemplateId,
       facts: newFacts,
-      documentBody: '',
+      documentBody: bodyToUse,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -841,20 +931,24 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     setDrafts((prev) => [...prev, newDraft]);
     setActiveDraftId(newId);
     setFacts(newFacts);
-    setDocumentBody('');
+    setDocumentBody(bodyToUse);
+    saveDraftToBackend(newDraft);
     setIsNewDraftModalOpen(false);
+
+    setTimeout(() => {
+      isSwitchingRef.current = false;
+    }, 50);
   };
 
   const handleDeleteDraft = (draftId: string) => {
     const remaining = drafts.filter((d) => d.id !== draftId);
     setDrafts(remaining);
+    deleteDraftFromBackend(draftId);
 
     const remainingForTemplate = remaining.filter((d) => d.templateId === selectedTemplateId);
     if (remainingForTemplate.length > 0) {
       const next = remainingForTemplate[remainingForTemplate.length - 1];
-      setActiveDraftId(next.id);
-      setFacts(next.facts);
-      if (next.documentBody) setDocumentBody(next.documentBody);
+      switchDraft(next.id);
     }
   };
 
@@ -882,9 +976,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     reloadTemplates();
   }, []);
 
-  // Re-merge document body whenever active template or facts change
+  // Audit compliance & render initial document body ONLY IF body is empty
   useEffect(() => {
-    const mergeDoc = async () => {
+    const checkComplianceAndInitialRender = async () => {
       if (!selectedTemplateId) return;
       try {
         const res = await fetch('/api/documents/render', {
@@ -894,15 +988,19 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         });
         if (res.ok) {
           const data = await res.json();
-          const renderedText = replacePlaceholdersInHtml(data.text || '', facts);
-          setDocumentBody(renderedText);
           setCompliance(data.compliance);
+          setDocumentBody((prev) => {
+            if (!prev || !prev.trim()) {
+              return replacePlaceholdersInHtml(data.text || '', facts);
+            }
+            return prev;
+          });
         }
       } catch (err) {
-        console.error('Failed to render template:', err);
+        console.error('Failed to audit compliance:', err);
       }
     };
-    mergeDoc();
+    checkComplianceAndInitialRender();
   }, [selectedTemplateId, facts]);
 
   // Keep documentTitle in sync with activeTemplate title
@@ -913,6 +1011,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   }, [activeTemplate]);
 
   // 1. Give the Copilot context about the active legal document and client facts
+  // NOTE: documentBody is trimmed to 8000 chars to prevent oversized context causing Gemini token errors
   useCopilotReadable({
     description: 'The active legal document draft, including template title, category, language, and current body text.',
     value: {
@@ -921,8 +1020,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       title: activeTemplate?.title || documentTitle,
       category: activeTemplate?.category,
       language: activeTemplate?.language,
-      documentBody: documentBody,
-      body: documentBody,
+      documentBody: documentBody ? documentBody.substring(0, 8000) : '',
+      body: documentBody ? documentBody.substring(0, 8000) : '',
     },
   });
 
@@ -936,6 +1035,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     value: compliance,
   });
 
+  // NOTE: apiKey is already passed via CopilotKit headers prop in App.tsx (x-gemini-api-key).
+  // We also expose it in readable so the backend can extract it from the request body.
   useCopilotReadable({
     description: 'Gemini API key for AI Copilot chat service',
     value: { apiKey },
@@ -943,19 +1044,45 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
   // 2. Register frontend actions the Copilot can perform directly on the UI
   useCopilotAction({
+    name: 'createNewDraft',
+    description: 'Creates a new draft within the active template for a client/party and immediately displays it in Split View / Draft View.',
+    parameters: [
+      {
+        name: 'partyName',
+        type: 'string',
+        description: 'Primary party or complainant/applicant name for the new draft (e.g. Amit Mahajan)',
+      },
+      {
+        name: 'documentText',
+        type: 'string',
+        description: 'Optional initial revised text or content for the new draft',
+      },
+    ],
+    handler: async ({ partyName, documentText }) => {
+      handleCreateNewDraft('fresh', partyName, documentText);
+      return `New draft created and displayed in Split View / Draft View${partyName ? ` for ${partyName}` : ''}.`;
+    },
+  });
+
+  useCopilotAction({
     name: 'updateDocumentBody',
-    description: 'Updates or rewrites the active text content of the legal document directly in the editor.',
+    description: 'Updates or rewrites the active text content of the legal document directly in the editor. Always call this when you have revised document HTML.',
     parameters: [
       {
         name: 'newBodyText',
         type: 'string',
-        description: 'The revised complete legal document text.',
+        description: 'The revised complete legal document HTML text.',
         required: true,
       },
     ],
     handler: async ({ newBodyText }) => {
+      // Update React state
       setDocumentBody(newBodyText);
-      return 'Document body updated successfully in-place.';
+      // Also sync the contenteditable rich-text editor so the visual view updates immediately
+      if (docRichEditorRef.current && docEditorMode === 'visual') {
+        docRichEditorRef.current.innerHTML = newBodyText;
+      }
+      return 'Document updated in editor — changes are visible in the document panel.';
     },
   });
 
@@ -1047,13 +1174,17 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
     setIsTranslating(true);
     try {
-      const hasDevanagari = /[अ-ह\u0900-\u097F]/i.test(documentBody);
+      const selection = window.getSelection();
+      const selectedText = selection && selection.rangeCount > 0 ? selection.toString() : '';
+      const textToTranslate = selectedText.trim().length > 0 ? selectedText : documentBody;
+      
+      const hasDevanagari = /[अ-ह\u0900-\u097F]/i.test(textToTranslate);
       const chosenLang = targetLang || (hasDevanagari ? 'en' : 'mr');
       const res = await fetch('/api/copilot/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          documentBody,
+          documentBody: textToTranslate,
           targetLanguage: chosenLang,
           apiKey
         }),
@@ -1061,7 +1192,12 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.translated) {
-          setDocumentBody(data.translated);
+          if (selectedText.trim().length > 0 && docEditorMode === 'visual') {
+            document.execCommand('insertText', false, data.translated);
+            if (docRichEditorRef.current) setDocumentBody(docRichEditorRef.current.innerHTML);
+          } else {
+            setDocumentBody(data.translated);
+          }
         }
       } else {
         const errData = await res.json().catch(() => ({}));
@@ -1072,6 +1208,75 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       alert(`Translation Error: ${err?.message || 'Failed to connect to backend'}`);
     } finally {
       setIsTranslating(false);
+    }
+  };
+
+  const [isCheckingGrammar, setIsCheckingGrammar] = useState(false);
+  const handleGrammarCheck = async () => {
+    if (!documentBody || isCheckingGrammar) return;
+    setIsCheckingGrammar(true);
+    try {
+      const res = await fetch('/api/copilot/grammar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentBody, apiKey, templateTitle: activeTemplate?.title })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.corrected) {
+          setDocumentBody(data.corrected);
+          if (docRichEditorRef.current && docEditorMode === 'visual') {
+            docRichEditorRef.current.innerHTML = data.corrected;
+          }
+          alert('Grammar and formal legal style check complete. Document updated.');
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Grammar check failed: ' + err.message);
+    } finally {
+      setIsCheckingGrammar(false);
+    }
+  };
+
+  const handleClearHighlights = () => {
+    const currentHtml = docEditorMode === 'visual' && docRichEditorRef.current ? docRichEditorRef.current.innerHTML : documentBody;
+    const cleanHtml = currentHtml.replace(/<mark[^>]*>([\s\S]*?)<\/mark>/gi, '$1');
+    setDocumentBody(cleanHtml);
+    if (docRichEditorRef.current && docEditorMode === 'visual') {
+      docRichEditorRef.current.innerHTML = cleanHtml;
+    }
+  };
+
+  const [isDraftingClause, setIsDraftingClause] = useState(false);
+  const handleDraftClause = async () => {
+    const promptText = window.prompt("✍️ AI Marathi Clause Drafter\n\nDescribe the clause you want to generate (e.g., 'alimony waiver of 5 lakhs'):");
+    if (!promptText || !promptText.trim()) return;
+    
+    setIsDraftingClause(true);
+    try {
+      const res = await fetch('/api/copilot/draft-clause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptText, apiKey, templateTitle: activeTemplate?.title })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.clauseHTML) {
+          if (docEditorMode === 'visual' && docRichEditorRef.current) {
+            docRichEditorRef.current.focus();
+            document.execCommand('insertHTML', false, data.clauseHTML);
+            setDocumentBody(docRichEditorRef.current.innerHTML);
+          } else {
+            setDocumentBody(prev => prev + '\n\n' + data.clauseHTML);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Failed to draft clause: ' + err.message);
+    } finally {
+      setIsDraftingClause(false);
     }
   };
 
@@ -1108,6 +1313,58 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       setSelectedTemplateId(templateId);
       return `Template changed to ${templateId}.`;
     },
+  });
+
+  // 3. AI-powered smart chat suggestions — updates when active template changes
+  const templateName = activeTemplate?.title || documentTitle;
+  useCopilotChatSuggestions(
+    {
+      instructions: `You are JurisCopilot, an AI legal drafting assistant for Indian advocates.
+Active template: "${templateName}".
+Generate 4 highly specific, practical suggestions the advocate can click to use right now.
+Examples for divorce: "Add alimony waiver clause", "Check Bombay HC compliance".
+Examples for NDA: "Draft confidentiality clause", "Add governing law clause".
+Always include: one to fill client details, one to audit compliance, one template-specific clause, one to translate.`,
+    },
+    [selectedTemplateId]
+  );
+
+  // 4. AI-powered statutory compliance audit action
+  useCopilotAction({
+    name: 'aiAuditDocument',
+    description: 'Runs a deep AI-powered statutory compliance audit on the active legal document using Gemini and shows detailed pass/fail/warning results.',
+    parameters: [],
+    handler: async () => {
+      if (!documentBody) return 'No document to audit. Please generate a draft first.';
+      try {
+        const res = await fetch('/api/copilot/ai-audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            templateId: selectedTemplateId,
+            templateTitle: activeTemplate?.title || documentTitle,
+            documentBody,
+            facts,
+            apiKey
+          })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return `⚠️ AI Audit failed: ${err.error || 'Unknown error'}`;
+        }
+        const data = await res.json();
+        const lines: string[] = [];
+        lines.push(`## 🔍 AI Compliance Audit — ${activeTemplate?.title || documentTitle}`);
+        lines.push(`**Compliance Score: ${data.score ?? 0}/100**`);
+        lines.push(`\n${data.summary || ''}`);
+        if (data.passed?.length) lines.push(`\n### ✅ Passed (${data.passed.length})\n${data.passed.map((p: string) => `• ${p}`).join('\n')}`);
+        if (data.warnings?.length) lines.push(`\n### ⚠️ Warnings (${data.warnings.length})\n${data.warnings.map((w: string) => `• ${w}`).join('\n')}`);
+        if (data.failed?.length) lines.push(`\n### ❌ Missing/Failed (${data.failed.length})\n${data.failed.map((f: string) => `• ${f}`).join('\n')}`);
+        return lines.join('\n');
+      } catch (err: any) {
+        return `⚠️ AI Audit error: ${err?.message || 'Failed to connect to backend'}`;
+      }
+    }
   });
 
   // Handle Input Changes in Facts Form
@@ -1296,15 +1553,16 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
   // Live auto-replace placeholders in documentBody whenever facts change or documentBody loads
   useEffect(() => {
-    if (!documentBody) return;
-    const cleaned = replacePlaceholdersInHtml(documentBody, facts);
+    if (!documentBody || isSwitchingRef.current) return;
+    const targetTmpl = templates.find((t) => t.id === selectedTemplateId) || activeTemplate;
+    const cleaned = replacePlaceholdersInHtml(documentBody, facts, targetTmpl);
     if (cleaned !== documentBody) {
       setDocumentBody(cleaned);
       if (docRichEditorRef.current && docEditorMode === 'visual') {
-        docRichEditorRef.current.innerHTML = formatDocToHtml(cleaned);
+        docRichEditorRef.current.innerHTML = formatDocToHtml(cleaned, targetTmpl);
       }
     }
-  }, [facts, activeTemplate, documentBody]);
+  }, [facts, activeTemplate, documentBody, selectedTemplateId, templates]);
 
   // Dynamically group active template fields
   const fieldGroups = useMemo(() => {
@@ -2138,46 +2396,36 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                     </button>
                     <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
-                    {/* Manual Font Size Input in pt */}
-                    <div className="flex items-center gap-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 mr-1" title="Type exact Font Size in pt (e.g. 12, 14, 18)">
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Size:</span>
-                      <input
-                        type="number"
-                        min="6"
-                        max="96"
-                        step="0.5"
-                        defaultValue="12"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleDocExecCommand('fontSizePt', (e.target as HTMLInputElement).value);
-                          }
-                        }}
-                        onBlur={(e) => handleDocExecCommand('fontSizePt', e.target.value)}
-                        className="w-9 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
-                      />
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">pt</span>
-                      <select
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            const input = e.target.previousElementSibling?.previousElementSibling as HTMLInputElement;
-                            if (input) input.value = e.target.value;
-                            handleDocExecCommand('fontSizePt', e.target.value);
-                          }
-                        }}
-                        className="bg-transparent text-slate-500 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-0.5"
-                        defaultValue=""
-                      >
-                        <option value="" disabled>▾</option>
-                        <option value="10">10 pt</option>
-                        <option value="11">11 pt</option>
-                        <option value="12">12 pt (Court)</option>
-                        <option value="14">14 pt</option>
-                        <option value="16">16 pt</option>
-                        <option value="18">18 pt</option>
-                        <option value="24">24 pt</option>
-                      </select>
-                    </div>
+                    {/* Font Size Dropdown */}
+                    <select
+                      title="Font Size"
+                      defaultValue=""
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleDocExecCommand('fontSizePt', e.target.value);
+                        }
+                      }}
+                      className="h-[26px] bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer mr-1"
+                    >
+                      <option value="" disabled>Size</option>
+                      <option value="8">8 pt</option>
+                      <option value="9">9 pt</option>
+                      <option value="10">10 pt</option>
+                      <option value="11">11 pt</option>
+                      <option value="12">12 pt</option>
+                      <option value="13">13 pt</option>
+                      <option value="14">14 pt</option>
+                      <option value="16">16 pt</option>
+                      <option value="18">18 pt</option>
+                      <option value="20">20 pt</option>
+                      <option value="22">22 pt</option>
+                      <option value="24">24 pt</option>
+                      <option value="28">28 pt</option>
+                      <option value="32">32 pt</option>
+                      <option value="36">36 pt</option>
+                      <option value="48">48 pt</option>
+                      <option value="72">72 pt</option>
+                    </select>
 
                     {/* Font Size Increase / Decrease buttons */}
                     <button
@@ -2278,7 +2526,33 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
                       title="Translate active document draft between English and Marathi (Devanagari)"
                     >
                       <Languages className="w-3 h-3 text-indigo-600 dark:text-indigo-400" />
-                      <span>{isTranslating ? 'Translating...' : 'Translate (EN/MR)'}</span>
+                      <span>{isTranslating ? 'Translating...' : 'Translate'}</span>
+                    </button>
+                    <button
+                      onClick={() => handleGrammarCheck()}
+                      disabled={isCheckingGrammar}
+                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/80 dark:hover:bg-amber-900 disabled:opacity-50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700/60 rounded font-medium transition"
+                      title="Check formal Marathi grammar and legal style"
+                    >
+                      <Sparkles className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                      <span>{isCheckingGrammar ? 'Checking...' : 'Grammar Check'}</span>
+                    </button>
+                    <button
+                      onClick={() => handleClearHighlights()}
+                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-gray-50 hover:bg-gray-100 dark:bg-gray-800/80 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded font-medium transition"
+                      title="Clear all yellow grammar highlights from the document"
+                    >
+                      <Eraser className="w-3 h-3 text-gray-500 dark:text-gray-400" />
+                      <span>Clear Highlights</span>
+                    </button>
+                    <button
+                      onClick={() => handleDraftClause()}
+                      disabled={isDraftingClause}
+                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/80 dark:hover:bg-purple-900 disabled:opacity-50 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-700/60 rounded font-medium transition"
+                      title="Draft a new Marathi clause using AI"
+                    >
+                      <PlusCircle className="w-3 h-3 text-purple-600 dark:text-purple-400" />
+                      <span>{isDraftingClause ? 'Drafting...' : 'AI Clause Drafter'}</span>
                     </button>
                   </div>
                 )}
