@@ -238,7 +238,38 @@ export class CopilotService {
       return `I have updated your legal document and applied bold formatting.\n\n[REVISED_DOCUMENT_START]\n${genericUpdated.trim()}\n[REVISED_DOCUMENT_END]`;
     }
 
-    // 4. Document Translation fallback
+    // 4. Insert Specific Clauses
+    if (lower.includes('nda') || lower.includes('confidentiality') || lower.includes('non-disclosure')) {
+      const clause = `<p style="text-align: justify; margin-top: 15px;"><b>Confidentiality (NDA):</b> Each Party agrees that during the term of this Agreement and for a period of three (3) years thereafter, the Receiving Party shall maintain in strict confidence and not disclose to any third party any Confidential Information received from the Disclosing Party, using at least the same degree of care it uses to protect its own confidential information of like nature.</p>`;
+      const updated = this.appendClauseToHtml(html, clause);
+      return `I have added the Standard Confidentiality (NDA) clause to your legal document.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+    }
+
+    if (lower.includes('alimony') || lower.includes('पोटगी') || lower.includes('waiver') || lower.includes('हक्क सोडला')) {
+      const clause = `<p style="text-align: justify; text-indent: 40px; margin-top: 15px;">अर्जदार क्रमांक २ यांनी खावटी / पोटगी मागण्याचा संपूर्ण हक्क कायमस्वरूपी विनामोबदला या घटस्फोटापासून स्वखुशीने सोडून दिलेला आहे. भविष्यात अर्जदार क्र. २ ही पती किंवा त्यांच्या कुटुंबीयांविरुद्ध कोणतीही खावटी मागणार नाही किंवा केसेस करणार नाही.</p>`;
+      const updated = this.appendClauseToHtml(html, clause);
+      return `I have added the Alimony Waiver clause to your petition.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+    }
+
+    if (lower.includes('custody') || lower.includes('ताबा') || lower.includes('मुले') || lower.includes('child')) {
+      const clause = `<p style="text-align: justify; text-indent: 40px; margin-top: 15px;">दोन्ही अर्जदारांची अपत्ये अर्जदार क्रमांक २ (आई) यांच्याकडे कायमस्वरूपी राहावयाची असून, त्यांच्या पालन पोषण, शिक्षण व संगोपनाची संपूर्ण जबाबदारी अर्जदार क्रमांक २ यांची राहील. अर्जदार क्रमांक १ हे मुलांच्या ताब्याबाबत भविष्यात कोणताही वाद अथवा दावा करणार नाहीत.</p>`;
+      const updated = this.appendClauseToHtml(html, clause);
+      return `I have added the Child Custody clause to your petition.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+    }
+
+    if (lower.includes('pregnant') || lower.includes('गर्भवती') || lower.includes('pregnancy')) {
+      const clause = `<p style="text-align: justify; text-indent: 40px; margin-top: 15px;">तसेच आज रोजी अर्जदार क्र. २ ही गर्भवती नाही.</p>`;
+      const updated = this.appendClauseToHtml(html, clause);
+      return `I have added the mandatory Non-Pregnancy declaration to your petition.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+    }
+
+    if (lower.includes('high court') || lower.includes('guidelines') || lower.includes('मार्गदर्शक तत्त्वे')) {
+      const clause = `<p style="text-align: justify; text-indent: 40px; margin-top: 15px;">६) मा. मुंबई उच्च न्यायालयाच्या निर्देशानुसार :<br>अ) अर्जदार क्र. १ व २ हे हिंदू धर्माचे आहेत व हिंदू विवाह कायदा १९५५ लागू आहे.<br>ब) दोघांचे लग्न होऊन १ वर्षापेक्षा जास्त कालावधी झालेला आहे व ते १ वर्षापेक्षा अधिक कालावधीपासून विभक्त राहत आहेत.<br>क) उभयतांनी कोणत्याही दबावाखाली, धाकधपटशाने किंवा फसवणुकीने हा अर्ज केलेला नसून पूर्णतः स्वखुशीने व विचारपूर्वक दाखल केलेला आहे.<br>ड) यापूर्वी कोणत्याही कोर्टात घटस्फोटाचा अथवा वैवाहिक दाद मागण्याचा अर्ज प्रलंबित नाही.</p>`;
+      const updated = this.appendClauseToHtml(html, clause);
+      return `I have added the Bombay High Court Compliance clauses to your petition.\n\n[REVISED_DOCUMENT_START]\n${updated.trim()}\n[REVISED_DOCUMENT_END]`;
+    }
+
+    // 5. Document Translation fallback
     if (lower.includes('convert') || lower.includes('translate') || lower.includes('english') || lower.includes('marathi') || lower.includes('मराठी')) {
       const targetLang: 'en' | 'mr' = (lower.includes('marathi') || lower.includes('मराठी')) ? 'mr' : 'en';
       const translated = this.localTranslateHtml(html, targetLang);
@@ -246,8 +277,26 @@ export class CopilotService {
       return `I have translated your active legal document into formal ${langName}.\n\n[REVISED_DOCUMENT_START]\n${translated}\n[REVISED_DOCUMENT_END]`;
     }
 
-    // 5. Default fallback wrapper for any active document edit instruction
+    // 6. Default fallback wrapper for any active document edit instruction
     return `I have updated your legal document as requested.\n\n[REVISED_DOCUMENT_START]\n${html.trim()}\n[REVISED_DOCUMENT_END]`;
+  }
+
+  private appendClauseToHtml(html: string, clause: string): string {
+    let updated = html;
+    if (updated.includes('IN WITNESS WHEREOF')) {
+      updated = updated.replace(/(<p[^>]*>\s*IN WITNESS WHEREOF)/i, `${clause}\n$1`);
+    } else if (updated.includes('स्थळ :')) {
+      updated = updated.replace(/(<p[^>]*>\s*स्थळ :)/i, `${clause}\n$1`);
+    } else if (updated.includes('सही :')) {
+      updated = updated.replace(/(<p[^>]*>\s*सही :)/i, `${clause}\n$1`);
+    } else if (updated.includes('<div class="page-break"></div>')) {
+      const parts = updated.split('<div class="page-break"></div>');
+      const lastPart = parts.pop();
+      updated = parts.join('<div class="page-break"></div>') + clause + '\n<div class="page-break"></div>' + lastPart;
+    } else {
+      updated += `\n${clause}`;
+    }
+    return updated;
   }
 
   async processChat(options: CopilotChatOptions): Promise<string> {
@@ -285,6 +334,16 @@ export class CopilotService {
     // Shortcut: Translation
     const isTranslateCmd = (lower.includes('convert') || lower.includes('translate') || lower.includes('rewrite')) &&
       (lower.includes('english') || lower.includes('marathi') || lower.includes('मराठी') || lower.includes('document') || lower.includes('draft'));
+
+    // Shortcut: Insert Clauses (NDA, Alimony, Custody, High Court, Pregnancy)
+    const isClauseCmd = (lower.includes('nda') || lower.includes('confidentiality') || lower.includes('alimony') || lower.includes('पोटगी') || lower.includes('waiver') || lower.includes('custody') || lower.includes('ताबा') || lower.includes('pregnant') || lower.includes('गर्भवती') || lower.includes('high court') || lower.includes('guidelines') || lower.includes('मार्गदर्शक'));
+
+    if (isClauseCmd && context.documentBody) {
+      const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody);
+      if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]') && !localEdit.includes('I have updated your legal document as requested')) {
+        return localEdit;
+      }
+    }
 
     if (isTranslateCmd && context.documentBody) {
       const targetLang: 'en' | 'mr' = (lower.includes('marathi') || lower.includes('मराठी')) ? 'mr' : 'en';
@@ -353,11 +412,18 @@ DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/for
       if (text) {
         if (text.includes('[REVISED_DOCUMENT_START]') && text.includes('[REVISED_DOCUMENT_END]')) {
           const match = text.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
-          if (match && match[1].trim().length < 100) {
-            console.warn('Gemini returned an empty/truncated document! Falling back.');
-            const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody || '');
-            if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]')) return localEdit;
-            return '⚠️ The AI attempted to edit the document but failed to generate the full HTML safely due to output constraints. Please make this structural edit manually.';
+          if (match && match[1]) {
+            const revisedLen = match[1].trim().length;
+            const origLen = (context.documentBody || '').length;
+            // Reject if extremely short, or if it lost more than 60% of original content (signs of LLM truncation)
+            if (revisedLen < 150 || (origLen > 500 && revisedLen < origLen * 0.4)) {
+              console.warn(`Gemini returned a truncated document! (Orig: ${origLen} chars, Revised: ${revisedLen} chars). Falling back.`);
+              const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody || '');
+              if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]') && !localEdit.includes('I have updated your legal document as requested')) {
+                return localEdit;
+              }
+              return '⚠️ The AI attempted to edit the document but failed to generate the full HTML safely due to output constraints. Please make this edit manually or use simpler instructions.';
+            }
           }
         }
         return text;
