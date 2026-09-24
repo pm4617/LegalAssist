@@ -2427,22 +2427,7 @@ Always include: one to fill client details, one to audit compliance, one templat
                       <option value="72">72 pt</option>
                     </select>
 
-                    {/* Font Size Increase / Decrease buttons */}
-                    <button
-                      onClick={() => handleDocExecCommand('increaseFontSize')}
-                      className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded transition"
-                      title="Increase Font Size +1pt (A+)"
-                    >
-                      A+
-                    </button>
-                    <button
-                      onClick={() => handleDocExecCommand('decreaseFontSize')}
-                      className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700 rounded transition"
-                      title="Decrease Font Size -1pt (A-)"
-                    >
-                      A-
-                    </button>
-
+                    {/* Font Size Increase / Decrease buttons Removed as per request */}
                     <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
                     {/* Manual Line Spacing Input */}

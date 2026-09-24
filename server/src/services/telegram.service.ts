@@ -319,11 +319,18 @@ export class TelegramBotService {
   }
 
   private async handleStart(chatId: number, page: number = 0) {
-    const templates = templateService.getAllTemplates();
+    let templates = templateService.getAllTemplates();
     if (!templates || templates.length === 0) {
       await this.sendMessage(chatId, '⚠️ No legal templates found in system.');
       return;
     }
+
+    // Sort templates by updatedAt descending so newly created templates appear first
+    templates = [...templates].sort((a, b) => {
+      const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+      const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+      return dateB - dateA;
+    });
 
     const inlineKeyboard = this.buildTemplatePageKeyboard(templates, page);
     const totalPages = Math.ceil(templates.length / TelegramBotService.PAGE_SIZE);

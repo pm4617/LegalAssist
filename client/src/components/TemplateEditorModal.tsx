@@ -1456,23 +1456,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                         <option value="72">72 pt</option>
                       </select>
 
-                      {/* Font Size Increase / Decrease buttons */}
-                      <button
-                        type="button"
-                        onClick={() => handleExecCommand('increaseFontSize')}
-                        className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-200 hover:bg-slate-300 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded transition"
-                        title="Increase Font Size +1pt (A+)"
-                      >
-                        A+
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleExecCommand('decreaseFontSize')}
-                        className="px-1.5 py-0.5 text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-200 hover:bg-slate-300 dark:bg-slate-900 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded transition"
-                        title="Decrease Font Size -1pt (A-)"
-                      >
-                        A-
-                      </button>
+                      {/* Font Size Increase / Decrease buttons Removed as per request */}
                     </div>
 
                     {/* Text Formatting */}
