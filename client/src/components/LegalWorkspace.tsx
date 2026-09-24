@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useCopilotReadable, useCopilotAction } from '@copilotkit/react-core';
+import { CopilotTextarea } from '@copilotkit/react-textarea';
+import '@copilotkit/react-textarea/styles.css';
 import { useCopilotChatSuggestions } from '@copilotkit/react-ui';
 import {
   Scale,
@@ -2625,11 +2627,22 @@ Always include: one to fill client details, one to audit compliance, one templat
                     className="w-full h-auto min-h-[850px] outline-none border-none bg-transparent text-slate-900 font-marathi text-sm md:text-base leading-relaxed selection:bg-indigo-100 p-0 overflow-visible"
                   />
                 ) : (
-                  <textarea
+                  <CopilotTextarea
                     value={documentBody}
                     onChange={(e) => setDocumentBody(e.target.value)}
                     className="w-full h-auto min-h-[850px] resize-none outline-none border-none bg-transparent text-slate-900 font-mono text-xs md:text-sm leading-relaxed selection:bg-indigo-100 p-0 overflow-visible"
-                    placeholder="Raw legal document draft code will appear here..."
+                    placeholder="Raw legal document draft code will appear here... (AI autocomplete enabled: Start typing and Copilot will suggest the rest of the legal clause!)"
+                    autosuggestionsConfig={{
+                      textareaPurpose: `You are an AI assistant helping a lawyer draft a ${activeTemplate?.title || documentTitle}. Suggest autocomplete completions for the HTML legal clauses based on the client facts.`,
+                      chatApiConfigs: {
+                        suggestionsApiConfig: {
+                          forwardedParams: {
+                            max_tokens: 500,
+                            stop: ["\n", "</p>"]
+                          },
+                        },
+                      },
+                    }}
                   />
                 )}
               </div>

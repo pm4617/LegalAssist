@@ -415,8 +415,8 @@ DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/for
           if (match && match[1]) {
             const revisedLen = match[1].trim().length;
             const origLen = (context.documentBody || '').length;
-            // Reject if extremely short, or if it lost more than 60% of original content (signs of LLM truncation)
-            if (revisedLen < 150 || (origLen > 500 && revisedLen < origLen * 0.4)) {
+            // Reject if extremely short (less than 500 chars), or if it lost more than 60% of original content
+            if (revisedLen < 500 || (origLen > 800 && revisedLen < origLen * 0.4)) {
               console.warn(`Gemini returned a truncated document! (Orig: ${origLen} chars, Revised: ${revisedLen} chars). Falling back.`);
               const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody || '');
               if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]') && !localEdit.includes('I have updated your legal document as requested')) {
