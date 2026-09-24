@@ -375,6 +375,10 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
             revisedHtml = revisedHtml.replace(/^<code>|<\/code>$/gi, '').trim();
             revisedHtml = unescapeAllEntities(revisedHtml);
 
+            // Clean the giant HTML block from the visible chat to prevent re-triggering and improve UI
+            const updatedInnerHtml = node.innerHTML.replace(/\[REVISED_DOCUMENT_START\][\s\S]*?\[REVISED_DOCUMENT_END\]/g, '<div style="margin: 10px 0; padding: 10px; background: #e0f2fe; border-left: 4px solid #0284c7; border-radius: 4px; color: #0369a1; font-size: 13px;"><i>✅ Document updated directly in the editor</i></div>');
+            node.innerHTML = updatedInnerHtml;
+
             setDocumentBody((prev) => {
               if (prev !== revisedHtml) {
                 console.log('✅ Auto-synchronized formatted document draft from Copilot chat into editor!');
