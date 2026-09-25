@@ -382,28 +382,57 @@ export class CopilotService {
     }
 
     try {
-      // Trim documentBody to reduce token usage (important for free-tier quota)
-      const docBodyForPrompt = context.documentBody
-        ? context.documentBody.substring(0, 6000)
-        : '(empty)';
+      // Send entire documentBody to AI without any character limit
+      const docBodyForPrompt = context.documentBody || '(empty)';
 
       const systemPrompt = `You are JurisCopilot, an expert AI Legal Assistant for Indian court petitions and agreements.
 Active template: ${context.templateTitle || 'Legal Document'}
 Document (HTML):
 ${docBodyForPrompt}
-Client Facts: ${JSON.stringify(context.clientFacts || {}).substring(0, 800)}
+Client Facts: ${JSON.stringify(context.clientFacts || {})}
 
-DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/format/bold/change names):
-1. Keep the same template type always
-2. Apply ALL edits to the document HTML provided above
-3. PRESERVE all HTML tags, styles (p, b, u, span), page breaks, and alignments exactly
-4. Return: one brief confirmation sentence, then IMMEDIATELY the full updated HTML between these delimiters:
+DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/format/bold/change names/change table data):
+1. IN-PLACE TABLE EDITING & PRESERVATION:
+   - When the user asks to change, update, fill, correct, or add data in a table (e.g. Schedule of Property, List of Documents, Particulars of Claim, Alimony Breakdown, Asset Schedule, Party Details):
+     * ALWAYS UPDATE THE RELEVANT CELLS (<td>, <th>) OR ROWS (<tr>) DIRECTLY IN-PLACE INSIDE THE EXISTING <table>.
+     * NEVER ADD A NEW OR DUPLICATE TABLE WHEN EDITING EXISTING TABLE DATA. You must modify the existing <table> element in-place.
+     * If the user asks to add a new item or row to a table, add a new <tr>...</tr> inside the existing <table>.
+     * NEVER duplicate tables. If the document already has a table, keep only that one table with the edited cells.
+   - PRESERVE all table attributes and inline styles: width, border, border-collapse, padding, text-align, background-color.
+   - NEVER remove, delete, drop, omit, summarize, or convert tables into plain text or paragraphs unless the user explicitly commands to delete the table.
+2. MANDATORY SPACING & SOURCE FORMATTING PRESERVATION:
+   - Preserve all source formatting, paragraph margins (margin-top, margin-bottom), line spacing, and paragraph indentation (text-indent, &nbsp;).
+   - PRESERVE all blank lines and spacing paragraphs (such as <p><br></p>, <p>&nbsp;</p>, <br>). DO NOT collapse paragraphs or strip empty lines between legal clauses, court titles, schedules, and signatures.
+   - Maintain all text alignments (style="text-align: center/justify/right/left").
+   - Retain all page breaks (<div class="page-break"></div>).
+3. SCOPE OF CHANGES:
+   - Only modify the specific parts requested by the user (e.g. updating names, adding a clause, editing a specific point).
+   - Keep all other sections, clauses, headings, tables, dates, verification, and signature lines EXACTLY as they are in the source HTML.
+4. FULL DOCUMENT OUTPUT:
+   - Return: one brief confirmation sentence, then IMMEDIATELY the full updated HTML between these delimiters:
 [REVISED_DOCUMENT_START]
 <complete updated HTML here>
 [REVISED_DOCUMENT_END]
-5. CRITICAL: NEVER output empty delimiters. If you make no changes, do NOT use [REVISED_DOCUMENT_START]. If you use it, you MUST output the full 100% complete HTML document inside. DO NOT TRUNCATE.
-6. Use formal Maharashtra court Marathi terminology for Marathi documents
-7. Do NOT add unsolicited clauses or change template structure`;
+5. CRITICAL: NEVER output empty delimiters. If you make no changes, do NOT use [REVISED_DOCUMENT_START]. If you use it, you MUST output the full 100% complete HTML document inside with all original sections and tables. DO NOT TRUNCATE.
+6. Use formal Maharashtra court Marathi terminology for Marathi documents.
+7. If the user asks to add a new clause or point to an already numbered list (e.g., in the "Particulars of Claim" section), you MUST continue the numbering sequence by adding the next appropriate number (e.g., if the last item is 13, the new one should be 14, NOT a new number like 1).
+8. Maintain alignment , newlines and spacing of existing aligned texts even after adding or removing content
+9. If you are asked to remove or delete a clause or point , you MUST remove it completely without leaving any empty lines or spacing
+10. Maintain text size as per existing templates
+11. Maintain paragraph spacing as per existing templates
+12. Maintain line spacing as per existing templates
+13. Maintain indentation as per existing templates
+14. Maintain inbetween line spacing as per existing templates
+15. Maintain table border radius as per existing templates
+16. Maintain table cell padding as per existing templates
+17. Maintain table cell background color as per existing templates
+18. Maintain table cell text alignment as per existing templates
+19. Maintain table cell font size as per existing templates
+20. Maintain table cell font weight as per existing templates
+21. Maintain table cell font style as per existing templates
+22. Maintain table cell text decoration as per existing templates
+23. Maintain existing spacing provided by user as it is 
+24. Maintain empty lines , line breaks , new lines as entered by user in template.` ;
 
       const text = await this.generateWithGeminiFallback(client, [
         { role: 'user', parts: [{ text: `${systemPrompt}\n\nInstruction: ${message}` }] }
@@ -413,17 +442,24 @@ DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/for
         if (text.includes('[REVISED_DOCUMENT_START]') && text.includes('[REVISED_DOCUMENT_END]')) {
           const match = text.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
           if (match && match[1]) {
-            const revisedLen = match[1].trim().length;
+            let revisedBody = match[1].trim();
+
+            // Safeguard: Automatically detect and restore any tables or spacing dropped by the AI
+            revisedBody = this.ensureTablesAndSpacingPreserved(context.documentBody || '', revisedBody, message);
+
+            const revisedLen = revisedBody.length;
             const origLen = (context.documentBody || '').length;
             // Reject if extremely short (less than 500 chars), or if it lost more than 60% of original content
             if (revisedLen < 500 || (origLen > 800 && revisedLen < origLen * 0.4)) {
-              console.warn(`Gemini returned a truncated document! (Orig: ${origLen} chars, Revised: ${revisedLen} chars). Falling back.`);
+              console.warn(`Gemini returned a truncated document!(Orig: ${origLen} chars, Revised: ${revisedLen} chars).Falling back.`);
               const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody || '');
               if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]') && !localEdit.includes('I have updated your legal document as requested')) {
                 return localEdit;
               }
               return '⚠️ The AI attempted to edit the document but failed to generate the full HTML safely due to output constraints. Please make this edit manually or use simpler instructions.';
             }
+
+            return text.replace(match[1], `\n${revisedBody} \n`);
           }
         }
         return text;
@@ -437,20 +473,89 @@ DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/for
       if (!isRateLimit && context.documentBody) {
         const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody);
         if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]')) {
-          return `⚠️ Gemini AI Error: ${exactError}\n\nApplied local smart edit fallback instead:\n\n${localEdit}`;
+          return `⚠️ Gemini AI Error: ${exactError} \n\nApplied local smart edit fallback instead: \n\n${localEdit} `;
         }
       }
-      return `⚠️ Gemini AI Execution Error: ${exactError}`;
+      return `⚠️ Gemini AI Execution Error: ${exactError} `;
     }
 
     if (context.documentBody) {
       const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody);
       if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]')) {
-        return `⚠️ Gemini AI returned empty response.\n\nApplied local smart edit fallback instead:\n\n${localEdit}`;
+        return `⚠️ Gemini AI returned empty response.\n\nApplied local smart edit fallback instead: \n\n${localEdit} `;
       }
     }
 
-    return `⚠️ Gemini AI did not return a response. Please verify your API key settings.`;
+    return `⚠️ Gemini AI did not return a response.Please verify your API key settings.`;
+  }
+
+  ensureTablesAndSpacingPreserved(originalHtml: string, revisedHtml: string, userInstruction = ''): string {
+    if (!originalHtml || !revisedHtml) return revisedHtml || originalHtml || '';
+
+    let result = revisedHtml;
+
+    // 1. Table Preservation Guard:
+    // Check if user specifically requested to delete or remove tables
+    const isExplicitDeleteTable = /(?:delete|remove|drop|काढा|नका)\s+(?:the\s+)?(?:table|तक्ता|सारणी)/i.test(userInstruction);
+
+    if (!isExplicitDeleteTable) {
+      const origTables = originalHtml.match(/<table[\s\S]*?<\/table>/gi) || [];
+      const revisedTables = result.match(/<table[\s\S]*?<\/table>/gi) || [];
+
+      // If the revised document already contains at least as many tables as the original,
+      // all tables are preserved and were edited in-place. DO NOT inject duplicate tables!
+      if (origTables.length > 0 && revisedTables.length < origTables.length) {
+        for (let i = 0; i < origTables.length; i++) {
+          const tableHtml = origTables[i];
+          const tableText = tableHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          const words = tableText.split(/\s+/).filter(w => w.length > 2);
+          const sampleWords = words.slice(0, 5);
+          const hasWordsInRevised = sampleWords.length > 0 && sampleWords.some(w => result.includes(w));
+          const hasTable = result.includes(tableHtml) || hasWordsInRevised;
+
+          const currentRevisedCount = (result.match(/<table[\s\S]*?<\/table>/gi) || []).length;
+          if (!hasTable && currentRevisedCount < origTables.length) {
+            console.warn(`Restoring table #${i + 1} genuinely missing from AI revision...`);
+            const tablePos = originalHtml.indexOf(tableHtml);
+            let inserted = false;
+
+            if (tablePos > 0) {
+              const beforeSlice = originalHtml.substring(Math.max(0, tablePos - 300), tablePos);
+              const lastTagMatch = beforeSlice.match(/<p[^>]*>[\s\S]*?<\/p>|<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi);
+              if (lastTagMatch && lastTagMatch.length > 0) {
+                const anchorHtml = lastTagMatch[lastTagMatch.length - 1];
+                const anchorText = anchorHtml.replace(/<[^>]+>/g, '').trim();
+                if (anchorText && anchorText.length > 5 && result.includes(anchorText)) {
+                  const pos = result.indexOf(anchorText);
+                  const tagEnd = result.indexOf('</p>', pos);
+                  const hEnd = result.indexOf('</h', pos);
+                  let insertAt = -1;
+                  if (tagEnd !== -1 && (hEnd === -1 || tagEnd < hEnd)) insertAt = tagEnd + 4;
+                  else if (hEnd !== -1) insertAt = result.indexOf('>', hEnd) + 1;
+
+                  if (insertAt > 0) {
+                    result = result.substring(0, insertAt) + '\n' + tableHtml + '\n' + result.substring(insertAt);
+                    inserted = true;
+                  }
+                }
+              }
+            }
+
+            if (!inserted) {
+              // Fallback insertion: before verification, witness or signature, or at end
+              const signMatch = result.search(/(?:<p[^>]*>\s*(?:सत्यप्रतिज्ञा|सही|स्वाक्षरी|IN WITNESS WHEREOF|VERIFICATION|दिनांक|स्थळ))/i);
+              if (signMatch > 0) {
+                result = result.substring(0, signMatch) + '\n' + tableHtml + '\n' + result.substring(signMatch);
+              } else {
+                result = result + '\n' + tableHtml;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return result;
   }
 
   async translateDocument(options: { documentBody: string; targetLanguage: 'en' | 'mr'; apiKey?: string }): Promise<string> {
@@ -466,23 +571,28 @@ DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/for
       ? 'English (Indian legal court standard)'
       : 'Marathi (Devanagari Maharashtra court standard)';
 
-    const prompt = `You are an expert Indian court legal translator powered by Gemini 3.7 Flash. Translate the following legal document into formal, professional ${targetLangName}.
+    const prompt = `You are an expert Indian court legal translator powered by Gemini 3.7 Flash.Translate the following legal document into formal, professional ${targetLangName}.
 
 STRICT REQUIREMENTS:
-1. PRESERVE ALL HTML tags, inline styles (<p style="text-align: center;">, <b>, <u>, <div class="page-break"></div>), alignments, and line breaks EXACTLY.
-2. Only translate the text inside HTML nodes.
+      1. MANDATORY TABLE PRESERVATION:
+      - If the document has any<table>, <thead>, <tbody>, <tr>, <td>, <th>elements, PRESERVE ALL TABLES, ROWS, CELLS, BORDERS, AND FORMATTING 100 % INTACT.
+   - Do NOT remove or convert tables into plain text or paragraphs.Translate ONLY the text inside the cells.
+2. MANDATORY SPACING & FORMATTING PRESERVATION:
+      - PRESERVE ALL HTML tags, styles(<p style="text-align: center;" >, <b>, <u>, <div class="page-break" > </div>), alignments, and line breaks (<p><br></p >, <br>) EXACTLY.
 3. Use precise legal terminology for Indian court petitions and agreements.
 4. Return ONLY the translated HTML content without markdown block formatting or backticks.
 
 Document to translate:
-${documentBody}`;
+${documentBody} `;
 
     const text = await this.generateWithGeminiFallback(client, [
       { role: 'user', parts: [{ text: prompt }] }
     ]);
 
-    const cleaned = text.replace(/^```html|^```/gi, '').replace(/```$/g, '').trim();
-    if (cleaned.length > 0) return cleaned;
+    const cleaned = text.replace(/^```html\s*|^```\s*/gi, '').replace(/```$/g, '').trim();
+    if (cleaned.length > 0) {
+      return this.ensureTablesAndSpacingPreserved(documentBody, cleaned, 'translate');
+    }
 
     throw new Error('Gemini API did not return a valid translation response.');
   }
@@ -1141,7 +1251,7 @@ Statutory Requirements:
 ${reqsText}
 
 Document (HTML stripped):
-${documentBody.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 3000)}
+${documentBody.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}
 
 Task: Audit the document and return a JSON object with:
 {
@@ -1193,8 +1303,10 @@ Return ONLY valid JSON.`;
 Review the following HTML legal document (Template: ${templateTitle || 'Legal Document'}).
 Correct any grammatical errors, spelling mistakes, and ensure court-approved formal Marathi (Devanagari) register is used.
 
-CRITICAL REQUIREMENT: For EVERY single word or phrase that you change, correct, or add, you MUST wrap it in a <mark class="grammar-highlight"> tag so the user can see what was changed. 
+CRITICAL REQUIREMENTS:
+1. For EVERY single word or phrase that you change, correct, or add, you MUST wrap it in a <mark class="grammar-highlight"> tag so the user can see what was changed. 
 For example: if you change "नितिन" to "नितीन", output <mark class="grammar-highlight">नितीन</mark>.
+2. MANDATORY: PRESERVE ALL <table>, <tr>, <td>, <th> structures, table borders, cell styling, margins, and spacing (<p><br></p>, <br>). Do NOT remove or modify tables.
 
 Return ONLY the corrected HTML document. DO NOT wrap it in markdown block quotes. Preserve all HTML tags perfectly.
 
@@ -1203,7 +1315,8 @@ ${documentBody}`;
 
     const text = await this.generateWithGeminiFallback(client, [{ role: 'user', parts: [{ text: prompt }] }]);
     if (text) {
-      return text.replace(/```html|```/g, '').trim();
+      const cleaned = text.replace(/```html|```/g, '').trim();
+      return this.ensureTablesAndSpacingPreserved(documentBody, cleaned, 'grammar check');
     }
     throw new Error('Failed to generate grammar check');
   }
@@ -1226,6 +1339,44 @@ Do not include any explanation or markdown formatting.`;
       return text.replace(/```html|```/g, '').trim();
     }
     throw new Error('Failed to draft clause');
+  }
+
+  async processAutocomplete(textBefore: string, templateTitle: string, clientFacts: any, apiKey?: string): Promise<string> {
+    const client = this.getClient(apiKey);
+    if (!client) {
+      return '';
+    }
+
+    let factsStr = '';
+    if (clientFacts && typeof clientFacts === 'object') {
+      try {
+        factsStr = JSON.stringify(clientFacts, null, 2);
+      } catch (e) { }
+    }
+
+    const prompt = `You are an AI typing assistant for a lawyer drafting a ${templateTitle || 'legal document'}.
+Here are the facts of the case:
+${factsStr}
+
+The lawyer is currently typing the document in Marathi. Here is the exact text right before their cursor:
+"""
+${textBefore}
+"""
+
+Please suggest the next few words (or up to 2 sentences) to complete the thought contextually.
+CRITICAL RULES:
+1. ONLY output the continuation text. Do not repeat the text before the cursor.
+2. Do not output quotes.
+3. Keep it brief (max 20 words).
+4. Do not output any markdown formatting or tags, just raw text.`;
+
+    try {
+      const text = await this.generateWithGeminiFallback(client, [{ role: 'user', parts: [{ text: prompt }] }]);
+      return text ? text.trim() : '';
+    } catch (err) {
+      console.error('Autocomplete error:', err);
+      return '';
+    }
   }
 }
 

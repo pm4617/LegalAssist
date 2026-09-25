@@ -279,6 +279,17 @@ app.post('/api/copilot/chat', async (req, res) => {
   }
 });
 
+app.post('/api/copilot/autocomplete', async (req, res) => {
+  try {
+    const { textBefore, templateTitle, clientFacts, apiKey } = req.body;
+    const response = await copilotService.processAutocomplete(textBefore, templateTitle, clientFacts, apiKey);
+    res.json({ suggestion: response });
+  } catch (err: any) {
+    console.error('Copilot autocomplete error:', err);
+    res.status(500).json({ error: 'Failed to process AI autocomplete', details: err.message });
+  }
+});
+
 // Extract Client Details from Unstructured Notes
 app.post('/api/copilot/extract', async (req, res) => {
   try {
@@ -627,7 +638,9 @@ app.all(['/api/copilot', '/api/copilot/run', '/api/copilot/agents/:agent/run', '
       const docMatch = reply.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
 
       if (docMatch && docMatch[1]) {
-        const revisedBody = docMatch[1].trim();
+        let revisedBody = docMatch[1].trim();
+        // Guarantee tables and source spacing are preserved before dispatching to editor
+        revisedBody = copilotService.ensureTablesAndSpacingPreserved(clientContext.documentBody || '', revisedBody, latestMessage);
 
         emit('TEXT_MESSAGE_START', { message_id: msgId, messageId: msgId, id: msgId, role: 'assistant', specificationVersion: 'v1' });
         emit('TEXT_MESSAGE_CONTENT', { message_id: msgId, messageId: msgId, id: msgId, delta: reply, content: reply, specificationVersion: 'v1' });

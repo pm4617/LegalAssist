@@ -3,6 +3,8 @@ import { useCopilotReadable, useCopilotAction } from '@copilotkit/react-core';
 import { CopilotTextarea } from '@copilotkit/react-textarea';
 import '@copilotkit/react-textarea/styles.css';
 import { useCopilotChatSuggestions } from '@copilotkit/react-ui';
+import { TipTapEditor } from './TipTapEditor';
+import { LexicalEditor } from './LexicalEditor';
 import {
   Scale,
   FileText,
@@ -161,7 +163,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   };
 
   // Live Document Preview Visual Rich Text Editor state & helpers
-  const [docEditorMode, setDocEditorMode] = useState<'visual' | 'code'>('visual');
+  const [docEditorMode, setDocEditorMode] = useState<'visual' | 'code' | 'ai' | 'lexical'>('ai');
   const [paperSize, setPaperSize] = useState<'legal' | 'a4'>('a4');
   const [copiedFormat, setCopiedFormat] = useState<{
     bold?: boolean;
@@ -1017,17 +1019,16 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   }, [activeTemplate]);
 
   // 1. Give the Copilot context about the active legal document and client facts
-  // NOTE: documentBody is trimmed to 8000 chars to prevent oversized context causing Gemini token errors
   useCopilotReadable({
-    description: 'The active legal document draft, including template title, category, language, and current body text.',
+    description: 'The active legal document draft, including template title, category, language, and current complete body text with all tables and formatting.',
     value: {
       templateId: selectedTemplateId,
       templateTitle: activeTemplate?.title || documentTitle,
       title: activeTemplate?.title || documentTitle,
       category: activeTemplate?.category,
       language: activeTemplate?.language,
-      documentBody: documentBody ? documentBody.substring(0, 8000) : '',
-      body: documentBody ? documentBody.substring(0, 8000) : '',
+      documentBody: documentBody || '',
+      body: documentBody || '',
     },
   });
 
@@ -1072,23 +1073,81 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
   useCopilotAction({
     name: 'updateDocumentBody',
-    description: 'Updates or rewrites the active text content of the legal document directly in the editor. Always call this when you have revised document HTML.',
+    description: 'Updates or rewrites the active text content of the legal document directly in the editor. ALWAYS edit tables in-place (updating <td> cells or adding <tr> rows). NEVER duplicate or add new tables when revising existing table data. ALWAYS preserve all tables (<table>...</table>, rows, columns, borders), source formatting, paragraph spacing, and line breaks without stripping or collapsing them.',
     parameters: [
       {
         name: 'newBodyText',
         type: 'string',
-        description: 'The revised complete legal document HTML text.',
+        description: 'The revised complete legal document HTML text. You MUST edit existing tables in-place without adding duplicate tables, and preserve all table styling, source formatting, margins, and spacing.',
         required: true,
       },
     ],
     handler: async ({ newBodyText }) => {
+      let safeHtml = newBodyText;
+
+      // Table Preservation Guard: Ensure tables from the active document are never accidentally lost
+      // Only restore if the AI genuinely dropped/omitted a table (i.e. revised document has fewer tables than original)
+      const origTables = (documentBody || '').match(/<table[\s\S]*?<\/table>/gi) || [];
+      const revisedTables = (safeHtml || '').match(/<table[\s\S]*?<\/table>/gi) || [];
+
+      // If the revised document already contains at least as many tables as the original,
+      // all tables are preserved and were edited in-place. DO NOT inject duplicate tables!
+      if (origTables.length > 0 && revisedTables.length < origTables.length) {
+        for (let i = 0; i < origTables.length; i++) {
+          const tableHtml = origTables[i];
+          const tableText = tableHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          const words = tableText.split(/\s+/).filter(w => w.length > 2);
+          const sampleWords = words.slice(0, 5);
+          const hasWordsInRevised = sampleWords.length > 0 && sampleWords.some(w => safeHtml.includes(w));
+          const hasTable = safeHtml.includes(tableHtml) || hasWordsInRevised;
+
+          const currentCount = (safeHtml.match(/<table[\s\S]*?<\/table>/gi) || []).length;
+          if (!hasTable && currentCount < origTables.length) {
+            console.warn(`Restoring table #${i + 1} genuinely missing from AI revision...`);
+            const tablePos = documentBody.indexOf(tableHtml);
+            let inserted = false;
+
+            if (tablePos > 0) {
+              const beforeSlice = documentBody.substring(Math.max(0, tablePos - 300), tablePos);
+              const lastTagMatch = beforeSlice.match(/<p[^>]*>[\s\S]*?<\/p>|<h[1-6][^>]*>[\s\S]*?<\/h[1-6]>/gi);
+              if (lastTagMatch && lastTagMatch.length > 0) {
+                const anchorHtml = lastTagMatch[lastTagMatch.length - 1];
+                const anchorText = anchorHtml.replace(/<[^>]+>/g, '').trim();
+                if (anchorText && anchorText.length > 5 && safeHtml.includes(anchorText)) {
+                  const pos = safeHtml.indexOf(anchorText);
+                  const tagEnd = safeHtml.indexOf('</p>', pos);
+                  const hEnd = safeHtml.indexOf('</h', pos);
+                  let insertAt = -1;
+                  if (tagEnd !== -1 && (hEnd === -1 || tagEnd < hEnd)) insertAt = tagEnd + 4;
+                  else if (hEnd !== -1) insertAt = safeHtml.indexOf('>', hEnd) + 1;
+
+                  if (insertAt > 0) {
+                    safeHtml = safeHtml.substring(0, insertAt) + '\n' + tableHtml + '\n' + safeHtml.substring(insertAt);
+                    inserted = true;
+                  }
+                }
+              }
+            }
+
+            if (!inserted) {
+              const signMatch = safeHtml.search(/(?:<p[^>]*>\s*(?:सत्यप्रतिज्ञा|सही|स्वाक्षरी|IN WITNESS WHEREOF|VERIFICATION|दिनांक|स्थळ))/i);
+              if (signMatch > 0) {
+                safeHtml = safeHtml.substring(0, signMatch) + '\n' + tableHtml + '\n' + safeHtml.substring(signMatch);
+              } else {
+                safeHtml = safeHtml + '\n' + tableHtml;
+              }
+            }
+          }
+        }
+      }
+
       // Update React state
-      setDocumentBody(newBodyText);
+      setDocumentBody(safeHtml);
       // Also sync the contenteditable rich-text editor so the visual view updates immediately
       if (docRichEditorRef.current && docEditorMode === 'visual') {
-        docRichEditorRef.current.innerHTML = newBodyText;
+        docRichEditorRef.current.innerHTML = safeHtml;
       }
-      return 'Document updated in editor — changes are visible in the document panel.';
+      return 'Document updated in editor — tables and source formatting maintained.';
     },
   });
 
@@ -2237,8 +2296,42 @@ Always include: one to fill client details, one to audit compliance, one templat
                   {documentBody.length} chars
                 </span>
 
-                {/* View Mode Toggle: Visual Rich Text vs Code View */}
+                {/* View Mode Toggle: TipTap AI / Lexical / Visual Rich Text / Code View */}
                 <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-300 dark:border-slate-700 ml-2">
+                  <button
+                    onClick={() => {
+                      if (docEditorMode === 'code' && docRichEditorRef.current) {
+                        docRichEditorRef.current.innerHTML = formatDocToHtml(documentBody);
+                      }
+                      setDocEditorMode('ai');
+                    }}
+                    className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded font-medium transition ${
+                      docEditorMode === 'ai'
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                    title="TipTap AI Editor (Copilot autocomplete)"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    <span>TipTap AI</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (docEditorMode === 'code' && docRichEditorRef.current) {
+                        docRichEditorRef.current.innerHTML = formatDocToHtml(documentBody);
+                      }
+                      setDocEditorMode('lexical');
+                    }}
+                    className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded font-medium transition ${
+                      docEditorMode === 'lexical'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                    title="Lexical Editor (Meta) — rich text with AI autocomplete"
+                  >
+                    <Wand2 className="w-3 h-3" />
+                    <span>Lexical</span>
+                  </button>
                   <button
                     onClick={() => {
                       if (docEditorMode === 'code' && docRichEditorRef.current) {
@@ -2254,7 +2347,7 @@ Always include: one to fill client details, one to audit compliance, one templat
                     title="Render document draft as Visual Rich Text (HTML formatted)"
                   >
                     <Eye className="w-3 h-3" />
-                    <span>Visual Rich Text</span>
+                    <span>Visual</span>
                   </button>
                   <button
                     onClick={() => {
@@ -2271,7 +2364,7 @@ Always include: one to fill client details, one to audit compliance, one templat
                     title="View and edit raw HTML tags directly"
                   >
                     <Code className="w-3 h-3" />
-                    <span>Code View</span>
+                    <span>Code</span>
                   </button>
                 </div>
 
@@ -2599,7 +2692,27 @@ Always include: one to fill client details, one to audit compliance, one templat
                   </div>
                 ))}
 
-                {docEditorMode === 'visual' ? (
+                {docEditorMode === 'ai' ? (
+                  <TipTapEditor
+                    documentBody={documentBody || ''}
+                    onChange={(html) => setDocumentBody(html)}
+                    apiKey={apiKey}
+                    contextParams={{
+                      templateTitle: activeTemplate?.title || documentTitle,
+                      clientFacts: facts
+                    }}
+                  />
+                ) : docEditorMode === 'lexical' ? (
+                  <LexicalEditor
+                    documentBody={documentBody || ''}
+                    onChange={(html) => setDocumentBody(html)}
+                    apiKey={apiKey}
+                    contextParams={{
+                      templateTitle: activeTemplate?.title || documentTitle,
+                      clientFacts: facts
+                    }}
+                  />
+                ) : docEditorMode === 'visual' ? (
                   <div
                     ref={docRichEditorRef}
                     contentEditable
@@ -2634,6 +2747,7 @@ Always include: one to fill client details, one to audit compliance, one templat
                     placeholder="Raw legal document draft code will appear here... (AI autocomplete enabled: Start typing and Copilot will suggest the rest of the legal clause!)"
                     autosuggestionsConfig={{
                       textareaPurpose: `You are an AI assistant helping a lawyer draft a ${activeTemplate?.title || documentTitle}. Suggest autocomplete completions for the HTML legal clauses based on the client facts.`,
+                      chatApiConfigs: {}
                     }}
                   />
                 )}

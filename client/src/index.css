@@ -559,3 +559,15 @@ html.light .natural-page-line {
     widows: 3;
   }
 }
+
+/* TipTap Editor Fixes */
+.ProseMirror p {
+  margin-top: 0;
+  margin-bottom: 1em;
+}
+.ProseMirror p:last-child {
+  margin-bottom: 0;
+}
+.ProseMirror:focus {
+  outline: none;
+}
