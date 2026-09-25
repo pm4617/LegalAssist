@@ -217,6 +217,29 @@ Extraction Rules:
   const [isFormatSticky, setIsFormatSticky] = useState<boolean>(false);
   const docRichEditorRef = useRef<HTMLDivElement>(null);
   const isSelfEditingRef = useRef<boolean>(false);
+  const savedSelectionRangeRef = useRef<Range | null>(null);
+  const activeTargetRangeRef = useRef<Range | null>(null);
+
+  // Continuously track active selection range within docRichEditorRef
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && docRichEditorRef.current) {
+        const range = sel.getRangeAt(0);
+        if (
+          docRichEditorRef.current.contains(range.startContainer) &&
+          docRichEditorRef.current.contains(range.endContainer)
+        ) {
+          savedSelectionRangeRef.current = range.cloneRange();
+        }
+      }
+    };
+
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+    };
+  }, []);
 
   // Pressing Escape cancels Format Painter mode
   useEffect(() => {
@@ -382,14 +405,17 @@ Extraction Rules:
     // Live replace all placeholders in HTML (courtName, courtCity, etc.)
     html = replacePlaceholdersInHtml(html, facts, tmpl);
 
-    // Standardize all page break syntax (markdown [page-break], html comments, hr tags) to visual page break div
+    // Check if original content already contains block elements (excluding page breaks)
+    const hasBlockElements = /<(p|table|tr|td|h[1-6]|ul|ol|li)[^>]*>/i.test(html);
+
+    // Standardize all page break syntax to a placeholder
     html = html
-      .replace(/\[page-?break\]/gi, '<div class="page-break"></div><p><br></p>')
-      .replace(/<!--\s*page-?break\s*-->/gi, '<div class="page-break"></div><p><br></p>')
-      .replace(/<hr[^>]*class=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '<div class="page-break"></div><p><br></p>')
-      .replace(/<hr[^>]*style=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '<div class="page-break"></div><p><br></p>')
-      .replace(/--- COURT PAGE BREAK ---/g, '')
-      .replace(/<div class="page-break"[^>]*>([\s\S]*?)<\/div>/gi, '<div class="page-break"></div>');
+      .replace(/\[page-?break\]/gi, '___PAGE_BREAK___')
+      .replace(/<!--\s*page-?break\s*-->/gi, '___PAGE_BREAK___')
+      .replace(/<hr[^>]*class=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '___PAGE_BREAK___')
+      .replace(/<hr[^>]*style=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '___PAGE_BREAK___')
+      .replace(/--- COURT PAGE BREAK ---/g, '___PAGE_BREAK___')
+      .replace(/<div class="page-break"[^>]*>([\s\S]*?)<\/div>/gi, '___PAGE_BREAK___');
 
     html = html
       .replace(/<center>([\s\S]*?)<\/center>/gi, '<p style="text-align: center;">$1</p>')
@@ -398,11 +424,19 @@ Extraction Rules:
       .replace(/<p align=["']left["']>([\s\S]*?)<\/p>/gi, '<p style="text-align: left;">$1</p>')
       .replace(/<p align=["']justify["']>([\s\S]*?)<\/p>/gi, '<p style="text-align: justify;">$1</p>');
 
-    if (!/<(div|p|br|table|tr|td|h[1-6])[\s/>]/i.test(html)) {
+    if (!hasBlockElements) {
       html = html
         .split('\n')
-        .map((line) => (line.trim() ? `<p>${line}</p>` : '<p><br></p>'))
+        .map((line) => {
+          const trimmed = line.trim();
+          if (trimmed === '___PAGE_BREAK___') {
+            return '<div class="page-break"></div><p><br></p>';
+          }
+          return trimmed ? `<p>${trimmed}</p>` : '<p><br></p>';
+        })
         .join('');
+    } else {
+      html = html.replace(/___PAGE_BREAK___/g, '<div class="page-break"></div><p><br></p>');
     }
     return html;
   };
@@ -461,9 +495,42 @@ Extraction Rules:
     return () => observer.disconnect();
   }, []);
 
-  const handleDocExecCommand = (command: string, value: string = '') => {
+  const handleDocExecCommand = (command: string, value: string = '', explicitRange?: Range | null) => {
     if (docEditorMode === 'visual' && docRichEditorRef.current) {
-      docRichEditorRef.current.focus();
+      const container = docRichEditorRef.current;
+
+      // Determine the range to operate on:
+      // 1. Explicit range passed from caller (e.g. input / dropdown)
+      // 2. Active target range from input focus
+      // 3. Current selection if inside editor
+      // 4. Saved selection range if inside editor
+      let range: Range | null = explicitRange || activeTargetRangeRef.current || null;
+      const currentSel = window.getSelection();
+
+      if (!range) {
+        if (
+          currentSel &&
+          currentSel.rangeCount > 0 &&
+          container.contains(currentSel.getRangeAt(0).commonAncestorContainer)
+        ) {
+          range = currentSel.getRangeAt(0);
+        } else if (
+          savedSelectionRangeRef.current &&
+          container.contains(savedSelectionRangeRef.current.commonAncestorContainer)
+        ) {
+          range = savedSelectionRangeRef.current;
+        }
+      }
+
+      // Always refocus editor and restore selection
+      container.focus();
+      if (range && currentSel) {
+        try {
+          currentSel.removeAllRanges();
+          currentSel.addRange(range);
+        } catch {}
+      }
+
       if (command === 'insertPageBreak') {
         const pbHtml = `<div class="page-break"></div><p><br></p>`;
         document.execCommand('insertHTML', false, pbHtml);
@@ -476,7 +543,6 @@ Extraction Rules:
             document.execCommand('fontSize', false, '7');
             const editor = docRichEditorRef.current;
             if (editor) {
-              // Find all font elements with size="7" just inserted and replace with span style
               const fontEls = editor.querySelectorAll('font[size="7"]');
               fontEls.forEach((el) => {
                 const span = document.createElement('span');
@@ -486,7 +552,7 @@ Extraction Rules:
               });
             }
           } else {
-            const parent = sel?.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
+            const parent = (range?.startContainer || sel?.anchorNode)?.parentElement?.closest('p, div, span, h1, h2, h3, td, th');
             if (parent) (parent as HTMLElement).style.fontSize = `${pt}pt`;
           }
         }
@@ -511,8 +577,8 @@ Extraction Rules:
             const span = document.createElement('span');
             span.style.fontSize = `${newSize}pt`;
             try {
-              const range = sel.getRangeAt(0);
-              range.surroundContents(span);
+              const r = sel.getRangeAt(0);
+              r.surroundContents(span);
             } catch {
               const target = sel.anchorNode?.parentElement?.closest('p, div, span, h1, h2, h3');
               if (target) (target as HTMLElement).style.fontSize = `${newSize}pt`;
@@ -527,28 +593,54 @@ Extraction Rules:
       } else if (command === 'outdent') {
         document.execCommand('outdent');
       } else if (command === 'lineSpacing') {
-        const sel = window.getSelection();
-        if (sel && sel.rangeCount > 0) {
-          const container = docRichEditorRef.current;
-          const range = sel.getRangeAt(0);
-          const blocks = container
-            ? Array.from(container.querySelectorAll('p, div, h1, h2, h3, blockquote, li, td, th'))
-            : [];
-          const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
-          if (selectedBlocks.length > 0) {
-            selectedBlocks.forEach((b) => {
-              (b as HTMLElement).style.lineHeight = value;
+        const effectiveRange = range || (currentSel && currentSel.rangeCount > 0 ? currentSel.getRangeAt(0) : null);
+        if (effectiveRange) {
+          const allBlocks = Array.from(
+            container.querySelectorAll<HTMLElement>('p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, div')
+          ).filter((b) => !b.classList.contains('page-break') && b !== container);
+
+          let targetBlocks: HTMLElement[] = [];
+
+          if (effectiveRange.collapsed) {
+            const enclosingBlock = effectiveRange.startContainer.parentElement?.closest<HTMLElement>(
+              'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, div'
+            );
+            if (enclosingBlock && enclosingBlock !== container && !enclosingBlock.classList.contains('page-break')) {
+              targetBlocks = [enclosingBlock];
+            }
+          } else {
+            const intersecting = allBlocks.filter((b) => {
+              try {
+                return effectiveRange.intersectsNode(b);
+              } catch {
+                return false;
+              }
+            });
+            // Keep ONLY leaf blocks that do not contain other intersecting blocks
+            targetBlocks = intersecting.filter(
+              (b) => !intersecting.some((other) => other !== b && b.contains(other))
+            );
+          }
+
+          if (targetBlocks.length > 0) {
+            targetBlocks.forEach((b) => {
+              b.style.lineHeight = value;
             });
           } else {
-            const block = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
-            if (block) {
-              (block as HTMLElement).style.lineHeight = value;
+            const fallback = effectiveRange.startContainer.parentElement?.closest<HTMLElement>('p, div');
+            if (fallback && fallback !== container) {
+              fallback.style.lineHeight = value;
             } else {
               document.execCommand('formatBlock', false, 'p');
-              const newBlock = sel.anchorNode?.parentElement?.closest('p, div');
-              if (newBlock) (newBlock as HTMLElement).style.lineHeight = value;
+              const newP = window.getSelection()?.anchorNode?.parentElement?.closest<HTMLElement>('p, div');
+              if (newP && newP !== container) newP.style.lineHeight = value;
             }
           }
+
+          try {
+            savedSelectionRangeRef.current = effectiveRange.cloneRange();
+          } catch {}
+          activeTargetRangeRef.current = null;
         }
       } else if (command === 'insertTable') {
         const tableHtml = `<table style="width: 100%; border-collapse: collapse; margin: 12px 0;"><thead><tr><th style="border: 1px solid #000; padding: 6px; background-color: #f1f5f9; text-align: center;">अ. क्र.</th><th style="border: 1px solid #000; padding: 6px; background-color: #f1f5f9; text-align: center;">तपशील / विवरण</th><th style="border: 1px solid #000; padding: 6px; background-color: #f1f5f9; text-align: center;">रक्कम / नोंद</th></tr></thead><tbody><tr><td style="border: 1px solid #000; padding: 6px; text-align: center;">१</td><td style="border: 1px solid #000; padding: 6px;">-</td><td style="border: 1px solid #000; padding: 6px; text-align: center;">-</td></tr><tr><td style="border: 1px solid #000; padding: 6px; text-align: center;">२</td><td style="border: 1px solid #000; padding: 6px;">-</td><td style="border: 1px solid #000; padding: 6px; text-align: center;">-</td></tr></tbody></table><p><br></p>`;
@@ -610,16 +702,35 @@ Extraction Rules:
             document.execCommand('fontName', false, copiedFormat.fontFamily);
           }
           if (copiedFormat.lineHeight) {
-            if (sel && sel.rangeCount > 0 && container) {
-              const range = sel.getRangeAt(0);
-              const blocks = Array.from(container.querySelectorAll('p, div, h1, h2, h3, blockquote, li, td, th'));
-              const selectedBlocks = blocks.filter((b) => range.intersectsNode(b));
-              if (selectedBlocks.length > 0) {
-                selectedBlocks.forEach((b) => ((b as HTMLElement).style.lineHeight = copiedFormat.lineHeight!));
+            const effectiveRange = range || (sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null);
+            if (effectiveRange && container) {
+              const allBlocks = Array.from(
+                container.querySelectorAll<HTMLElement>('p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, div')
+              ).filter((b) => !b.classList.contains('page-break') && b !== container);
+
+              let targetBlocks: HTMLElement[] = [];
+              if (effectiveRange.collapsed) {
+                const enclosing = effectiveRange.startContainer.parentElement?.closest<HTMLElement>(
+                  'p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, div'
+                );
+                if (enclosing && enclosing !== container && !enclosing.classList.contains('page-break')) {
+                  targetBlocks = [enclosing];
+                }
               } else {
-                const target = sel.anchorNode?.parentElement?.closest('p, div, h1, h2, h3, blockquote, td, th');
-                if (target) (target as HTMLElement).style.lineHeight = copiedFormat.lineHeight;
+                const intersecting = allBlocks.filter((b) => {
+                  try {
+                    return effectiveRange.intersectsNode(b);
+                  } catch {
+                    return false;
+                  }
+                });
+                targetBlocks = intersecting.filter(
+                  (b) => !intersecting.some((other) => other !== b && b.contains(other))
+                );
               }
+              targetBlocks.forEach((b) => {
+                b.style.lineHeight = copiedFormat.lineHeight!;
+              });
             }
           }
           if (copiedFormat.alignment) {
@@ -636,6 +747,7 @@ Extraction Rules:
       } else {
         document.execCommand(command, false, value);
       }
+      isSelfEditingRef.current = true;
       setDocumentBody(docRichEditorRef.current.innerHTML);
     }
   };
@@ -2461,9 +2573,6 @@ Always include: one to fill client details, one to audit compliance, one templat
                         <FileText className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                         <span>{getQuestionnaireForTemplate(activeTemplate).title}:</span>
                       </label>
-                      <span className="text-[10px] sm:text-xs bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-semibold">
-                        ⚡ वेळ बचत (Time Saver)
-                      </span>
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -3080,9 +3189,23 @@ Always include: one to fill client details, one to audit compliance, one templat
                     <select
                       title="Font Size"
                       defaultValue=""
+                      onMouseDown={() => {
+                        const sel = window.getSelection();
+                        if (sel && sel.rangeCount > 0 && docRichEditorRef.current) {
+                          const r = sel.getRangeAt(0);
+                          if (
+                            docRichEditorRef.current.contains(r.startContainer) &&
+                            docRichEditorRef.current.contains(r.endContainer)
+                          ) {
+                            savedSelectionRangeRef.current = r.cloneRange();
+                            activeTargetRangeRef.current = r.cloneRange();
+                          }
+                        }
+                      }}
                       onChange={(e) => {
                         if (e.target.value) {
-                          handleDocExecCommand('fontSizePt', e.target.value);
+                          const targetRange = activeTargetRangeRef.current || savedSelectionRangeRef.current;
+                          handleDocExecCommand('fontSizePt', e.target.value, targetRange);
                         }
                       }}
                       className="h-[26px] bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer mr-1"
@@ -3111,7 +3234,23 @@ Always include: one to fill client details, one to audit compliance, one templat
                     <div className="h-3 w-px bg-slate-300 dark:bg-slate-700 mx-0.5" />
 
                     {/* Manual Line Spacing Input */}
-                    <div className="flex items-center gap-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 mr-1" title="Type exact Line Spacing (e.g. 1.0, 1.2, 1.5, 1.6, 2.0)">
+                    <div
+                      className="flex items-center gap-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded px-1.5 py-0.5 mr-1"
+                      title="Type exact Line Spacing (e.g. 1.0, 1.2, 1.5, 1.6, 2.0)"
+                      onMouseDown={() => {
+                        const sel = window.getSelection();
+                        if (sel && sel.rangeCount > 0 && docRichEditorRef.current) {
+                          const r = sel.getRangeAt(0);
+                          if (
+                            docRichEditorRef.current.contains(r.startContainer) &&
+                            docRichEditorRef.current.contains(r.endContainer)
+                          ) {
+                            savedSelectionRangeRef.current = r.cloneRange();
+                            activeTargetRangeRef.current = r.cloneRange();
+                          }
+                        }
+                      }}
+                    >
                       <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">Line:</span>
                       <input
                         type="number"
@@ -3119,22 +3258,52 @@ Always include: one to fill client details, one to audit compliance, one templat
                         max="5.0"
                         step="0.1"
                         defaultValue="1.6"
+                        onFocus={() => {
+                          if (savedSelectionRangeRef.current && docRichEditorRef.current) {
+                            if (
+                              docRichEditorRef.current.contains(savedSelectionRangeRef.current.startContainer) &&
+                              docRichEditorRef.current.contains(savedSelectionRangeRef.current.endContainer)
+                            ) {
+                              activeTargetRangeRef.current = savedSelectionRangeRef.current.cloneRange();
+                            }
+                          }
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             e.preventDefault();
-                            handleDocExecCommand('lineSpacing', (e.target as HTMLInputElement).value);
+                            const targetRange = activeTargetRangeRef.current || savedSelectionRangeRef.current;
+                            handleDocExecCommand('lineSpacing', (e.target as HTMLInputElement).value, targetRange);
                           }
                         }}
-                        onBlur={(e) => handleDocExecCommand('lineSpacing', e.target.value)}
+                        onBlur={(e) => {
+                          const targetRange = activeTargetRangeRef.current || savedSelectionRangeRef.current;
+                          if (e.target.value) {
+                            handleDocExecCommand('lineSpacing', e.target.value, targetRange);
+                          }
+                        }}
                         className="w-9 bg-transparent text-slate-900 dark:text-slate-200 text-xs font-semibold focus:outline-none text-center"
                       />
                       <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">x</span>
                       <select
+                        onMouseDown={() => {
+                          const sel = window.getSelection();
+                          if (sel && sel.rangeCount > 0 && docRichEditorRef.current) {
+                            const r = sel.getRangeAt(0);
+                            if (
+                              docRichEditorRef.current.contains(r.startContainer) &&
+                              docRichEditorRef.current.contains(r.endContainer)
+                            ) {
+                              savedSelectionRangeRef.current = r.cloneRange();
+                              activeTargetRangeRef.current = r.cloneRange();
+                            }
+                          }
+                        }}
                         onChange={(e) => {
                           if (e.target.value) {
                             const input = e.target.previousElementSibling?.previousElementSibling as HTMLInputElement;
                             if (input) input.value = e.target.value;
-                            handleDocExecCommand('lineSpacing', e.target.value);
+                            const targetRange = activeTargetRangeRef.current || savedSelectionRangeRef.current;
+                            handleDocExecCommand('lineSpacing', e.target.value, targetRange);
                           }
                         }}
                         className="bg-transparent text-slate-500 dark:text-slate-400 text-[10px] focus:outline-none cursor-pointer border-l border-slate-300 dark:border-slate-700 pl-0.5"
@@ -3302,10 +3471,32 @@ Always include: one to fill client details, one to audit compliance, one templat
                     contentEditable={isDirectA4Editing}
                     suppressContentEditableWarning
                     onMouseUp={() => {
+                      const sel = window.getSelection();
+                      if (sel && sel.rangeCount > 0 && docRichEditorRef.current) {
+                        const r = sel.getRangeAt(0);
+                        if (
+                          docRichEditorRef.current.contains(r.startContainer) &&
+                          docRichEditorRef.current.contains(r.endContainer)
+                        ) {
+                          savedSelectionRangeRef.current = r.cloneRange();
+                        }
+                      }
                       if (isFormatSticky && copiedFormat) {
                         const selStr = window.getSelection()?.toString().trim();
                         if (selStr && selStr.length > 0) {
                           handleDocExecCommand('applyFormat');
+                        }
+                      }
+                    }}
+                    onKeyUp={() => {
+                      const sel = window.getSelection();
+                      if (sel && sel.rangeCount > 0 && docRichEditorRef.current) {
+                        const r = sel.getRangeAt(0);
+                        if (
+                          docRichEditorRef.current.contains(r.startContainer) &&
+                          docRichEditorRef.current.contains(r.endContainer)
+                        ) {
+                          savedSelectionRangeRef.current = r.cloneRange();
                         }
                       }
                     }}

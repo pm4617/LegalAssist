@@ -2,7 +2,7 @@ import { LegalTemplate } from '../types';
 
 export interface QuestionnaireInfo {
   title: string;
-  badge: string;
+  badge?: string;
   blankPrompt: string;
   samplePrompt: string;
 }
@@ -16,7 +16,6 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
   if (tid.includes('chq') || tid.includes('cheque') || title.includes('cheque') || title.includes('चेक') || desc.includes('138')) {
     return {
       title: 'चेक अनादर (Section 138 NI Act) फौजदारी तक्रार प्रश्नावली',
-      badge: '⚡ वेळ बचत (Time Saver)',
       blankPrompt: `चेक अनादर (Section 138 NI Act) फौजदारी तक्रार प्रश्नावली:
 [टीप: केवळ प्रत्यक्ष संबंधित पक्षकार व आरोपींची माहिती भरा. लागू नसलेले आरोपी सोडून द्या, ते मसुद्यातून आपोआप वगळले जातील.]
 न्यायालयाचे ठिकाण (Court City): 
@@ -119,7 +118,6 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
   if (tid.includes('varas') || tid.includes('heir') || title.includes('वारस') || title.includes('heirship') || desc.includes('वारस')) {
     return {
       title: 'वारस माहिती प्रश्नावली (Varas Pre-typed Form — Edit & Fill)',
-      badge: '⚡ वेळ बचत (Time Saver)',
       blankPrompt: `वारस दाखला/Heirship Certificate 
 [टीप: केवळ उपलब्ध वारसांचीच माहिती भरा (उदा. २ किंवा ३ वारस). लागू नसलेले वारस (#४, #५ इ.) कोरे ठेवा, ते दस्तऐवजातून आपोआप वगळले जातील.]
 न्यायालयाचे ठीकाण (Court Place): 
@@ -242,7 +240,6 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
   if (tid.includes('divorce') || tid.includes('13b') || title.includes('divorce') || title.includes('घटस्फोट')) {
     return {
       title: 'हिंदू विवाह कायदा कलम १३-ब परस्पर संमतीने घटस्फोट अर्ज प्रश्नावली',
-      badge: '⚡ वेळ बचत (Time Saver)',
       blankPrompt: `हिंदू विवाह कायदा कलम १३-ब परस्पर संमतीने घटस्फोट अर्ज प्रश्नावली:
 [टीप: केवळ संबंधित पक्षकार / अर्जदारांचीच माहिती भरा.]
 न्यायालयाचे ठिकाण / शहर (Court City): 
@@ -325,7 +322,6 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
   if (tid.includes('recovery') || tid.includes('notice') || title.includes('notice') || title.includes('नोटीस')) {
     return {
       title: 'कायदेशीर वसुली नोटीस प्रश्नावली (Legal Recovery Notice)',
-      badge: '⚡ वेळ बचत (Time Saver)',
       blankPrompt: `कायदेशीर नोटीस (थकबाकी वसुली) प्रश्नावली:
 [टीप: केवळ संबंधित पक्षकारांचीच माहिती भरा.]
 शहर / ठिकाण: 
@@ -376,7 +372,6 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
   if (tid.includes('affidavit') || tid.includes('name') || title.includes('affidavit') || title.includes('प्रतिज्ञापत्र')) {
     return {
       title: 'कायदेशीर प्रतिज्ञापत्र प्रश्नावली (Legal Affidavit Form)',
-      badge: '⚡ वेळ बचत (Time Saver)',
       blankPrompt: `कायदेशीर प्रतिज्ञापत्र माहिती प्रश्नावली:
 [टीप: केवळ प्रत्यक्ष अर्जदाराचीच माहिती भरा.]
 सक्षम प्राधिकारी / नोटरी ठिकाण: 
@@ -435,7 +430,6 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
 
   return {
     title: `${template?.title || 'कायदेशीर मसुदा'} प्रश्नावली`,
-    badge: '⚡ वेळ बचत (Time Saver)',
     blankPrompt: blankLines.trim(),
     samplePrompt: sampleLines.trim()
   };
