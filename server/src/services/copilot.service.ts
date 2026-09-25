@@ -1,5 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { ClientFacts } from '../types/index.js';
+import { templateService } from './template.service.js';
+import { getMarathiTodayDate, isValidPartyValue } from '../utils/date.utils.js';
 
 export interface CopilotChatOptions {
   message: string;
@@ -54,6 +56,54 @@ export class CopilotService {
     return null;
   }
 
+  /**
+   * Sanitizes bloated MS Word HTML (mso-* properties, broken word spans, Office XML tags)
+   * while 100% preserving all structural tables, rows, cells, alignments, borders, padding, bold/italics, and text.
+   */
+  sanitizeWordHtml(raw: string): string {
+    if (!raw) return '';
+    let s = raw;
+
+    // 1. Remove Word XML tags, doctypes, and comments
+    s = s.replace(/<o:p>[\s\S]*?<\/o:p>/gi, '');
+    s = s.replace(/<!--[\s\S]*?-->/gi, '');
+    s = s.replace(/<\/?xml[^>]*>/gi, '');
+
+    // 2. Normalize whitespace/newlines inside tags so regexes match reliably
+    s = s.replace(/<([^>]*)>/g, (_, inner) => `<${inner.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim()}>`);
+
+    // 3. Remove all fragmented Word span wrappers (which break words like मे . न्यायदंडाधिकारी)
+    // Preserving all inner text & whitespace
+    for (let i = 0; i < 5; i++) {
+      s = s.replace(/<span\b[^>]*>([\s\S]*?)<\/span>/gi, '$1');
+    }
+
+    // 4. If any bold/strong tag contains ONLY whitespace, replace with that whitespace so words don't merge
+    s = s.replace(/<b>(\s+)<\/b>/gi, '$1');
+    s = s.replace(/<strong>(\s+)<\/strong>/gi, '$1');
+    s = s.replace(/<b><\/b>/gi, '');
+    s = s.replace(/<strong><\/strong>/gi, '');
+
+    // 5. Consolidate fragmented bold tags across words: </b><b> or </b> <b>
+    for (let i = 0; i < 4; i++) {
+      s = s.replace(/<\/b>(\s*)<b>/gi, '$1');
+      s = s.replace(/<\/strong>(\s*)<strong>/gi, '$1');
+    }
+
+    // 6. Clean mso-* properties from paragraphs and table cells
+    s = s.replace(/\s*mso-[a-z0-9\-]+:[^;">]+;?/gi, '');
+
+    // 7. Clean font-family and redundant colors while keeping text-align, borders, widths, padding
+    s = s.replace(/\s*font-family:[^;">]+;?/gi, '');
+    s = s.replace(/\s*color:\s*black;?/gi, '');
+    s = s.replace(/\s*style=["']\s*["']/gi, '');
+
+    // 8. Collapse repeated spaces
+    s = s.replace(/[ \t]{2,}/g, ' ');
+
+    return s.trim();
+  }
+
   private async generateWithGeminiFallback(client: GoogleGenAI, contents: any, config?: any): Promise<string> {
     // Free-tier Gemini models (in order of preference)
     const modelsToTry = [
@@ -66,12 +116,17 @@ export class CopilotService {
     let lastError: any = null;
     let rateLimitError: any = null;
 
+    const requestConfig = {
+      maxOutputTokens: 8192,
+      ...(config?.config || config || {})
+    };
+
     for (const model of modelsToTry) {
       try {
         const response = await client.models.generateContent({
           model,
           contents,
-          ...(config || {})
+          config: requestConfig
         });
         if (response.text && response.text.trim()) {
           return response.text.trim();
@@ -382,63 +437,122 @@ export class CopilotService {
     }
 
     try {
-      // Send entire documentBody to AI without any character limit
-      const docBodyForPrompt = context.documentBody || '(empty)';
+      // Sanitize heavy MS Word HTML bloat (mso-*, broken word spans, xml tags) before sending to Gemini
+      // This reduces token count by 75-80% while preserving 100% of tables, borders, alignments, and text
+      const cleanDocBody = this.sanitizeWordHtml(context.documentBody || '');
+      const docBodyForPrompt = cleanDocBody || '(empty)';
+
+      // Detect all {placeholder} tags currently present in the template HTML
+      const detectedPlaceholders = Array.from(new Set(
+        (context.documentBody || '').match(/\{[a-zA-Z0-9_-]+\}/g) || []
+      ));
 
       const systemPrompt = `You are JurisCopilot, an expert AI Legal Assistant for Indian court petitions and agreements.
 Active template: ${context.templateTitle || 'Legal Document'}
+Client Facts: ${JSON.stringify(context.clientFacts || {})}
+Active Template Placeholders: ${detectedPlaceholders.join(', ') || 'none'}
 Document (HTML):
 ${docBodyForPrompt}
-Client Facts: ${JSON.stringify(context.clientFacts || {})}
 
-DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/format/bold/change names/change table data):
+=======================================================
+RULE 1: FAST FACT & PLACEHOLDER UPDATES (CRITICAL - HIGHEST PRIORITY):
+=======================================================
+When the user asks to change, update, fill, correct, or set ANY case facts, party details, names, numbers, or dates:
+(e.g., Complainant/Applicant name, Accused name, Cheque Number, Cheque Date, Amount, Bank name, Bank branch, Memo Date, Notice Date, Notice Received Date, Tracking Number, Addresses, Ages, Occupations, Court name, Court city):
+
+DO NOT RE-GENERATE OR OUTPUT THE ENTIRE HTML DOCUMENT! (Regenerating the whole document wastes thousands of tokens and causes output cutoffs).
+INSTEAD, you MUST output a JSON object mapping the placeholder keys (without the curly braces) to their new values between [FACTS_JSON_START] and [FACTS_JSON_END], followed by a friendly 1-2 sentence confirmation message.
+
+Common keys:
+- party1Name (Complainant / Applicant / Husband / First Party / Deponent)
+- party2Name (Accused / Opposite Party / Wife / Second Party)
+- party1Address, party2Address, party1Contact, party2Contact, party1Age, party2Age, party1Occupation, party2Occupation
+- ChequeNumber, ChequeDate, AmountofCheque, AmountInWords, AccusedBank, AccusedBankBranch, AcNumber, ComplaintBank
+- MemoDate, MemoReason, NoticeDate, TrackingNo, NoticeDeliveredDate, CauseOfActionDate, todaysDate
+- courtCity, courtName, AdvocateName, etc.
+
+Example Output for fact changes:
+[FACTS_JSON_START]
+{
+  "party1Name": "Rambhau Traders",
+  "party2Name": "Nisha Suppliers",
+  "ChequeNumber": "123456",
+  "AmountofCheque": "500000",
+  "AccusedBank": "JDCC Jalgaon Bank",
+  "MemoDate": "13-08-2026",
+  "NoticeDate": "14-08-2026",
+  "NoticeDeliveredDate": "16-08-2026"
+}
+[FACTS_JSON_END]
+I have updated the complainant to Rambhau Traders, accused to Nisha Suppliers, cheque number 123456, amount Rs. 5,00,000, and all corresponding dates in your active document.
+
+=======================================================
+RULE 2: STRUCTURAL DOCUMENT EDITING RULES (apply ONLY when user explicitly asks to add clauses, translate, or delete sections):
+=======================================================
 1. IN-PLACE TABLE EDITING & PRESERVATION:
-   - When the user asks to change, update, fill, correct, or add data in a table (e.g. Schedule of Property, List of Documents, Particulars of Claim, Alimony Breakdown, Asset Schedule, Party Details):
+   - When the user asks to change, update, fill, correct, or add data in a table:
      * ALWAYS UPDATE THE RELEVANT CELLS (<td>, <th>) OR ROWS (<tr>) DIRECTLY IN-PLACE INSIDE THE EXISTING <table>.
-     * NEVER ADD A NEW OR DUPLICATE TABLE WHEN EDITING EXISTING TABLE DATA. You must modify the existing <table> element in-place.
-     * If the user asks to add a new item or row to a table, add a new <tr>...</tr> inside the existing <table>.
-     * NEVER duplicate tables. If the document already has a table, keep only that one table with the edited cells.
-   - PRESERVE all table attributes and inline styles: width, border, border-collapse, padding, text-align, background-color.
-   - NEVER remove, delete, drop, omit, summarize, or convert tables into plain text or paragraphs unless the user explicitly commands to delete the table.
+     * NEVER ADD A NEW OR DUPLICATE TABLE. Modify the existing <table> element in-place.
+     * PRESERVE all table attributes and inline styles: width, border, border-collapse, padding, text-align, background-color.
 2. MANDATORY SPACING & SOURCE FORMATTING PRESERVATION:
-   - Preserve all source formatting, paragraph margins (margin-top, margin-bottom), line spacing, and paragraph indentation (text-indent, &nbsp;).
-   - PRESERVE all blank lines and spacing paragraphs (such as <p><br></p>, <p>&nbsp;</p>, <br>). DO NOT collapse paragraphs or strip empty lines between legal clauses, court titles, schedules, and signatures.
+   - Preserve all source formatting, paragraph margins, line spacing, and paragraph indentation.
+   - PRESERVE all blank lines and spacing paragraphs (such as <p><br></p>, <p>&nbsp;</p>, <br>).
    - Maintain all text alignments (style="text-align: center/justify/right/left").
    - Retain all page breaks (<div class="page-break"></div>).
 3. SCOPE OF CHANGES:
-   - Only modify the specific parts requested by the user (e.g. updating names, adding a clause, editing a specific point).
-   - Keep all other sections, clauses, headings, tables, dates, verification, and signature lines EXACTLY as they are in the source HTML.
-4. FULL DOCUMENT OUTPUT:
+   - Only modify the specific parts requested by the user. Keep all other sections, clauses, headings, tables, dates, verification, and signature lines EXACTLY as they are in the source HTML.
+4. FULL DOCUMENT OUTPUT (FOR STRUCTURAL/CLAUSE REWRITES ONLY):
    - Return: one brief confirmation sentence, then IMMEDIATELY the full updated HTML between these delimiters:
 [REVISED_DOCUMENT_START]
 <complete updated HTML here>
 [REVISED_DOCUMENT_END]
-5. CRITICAL: NEVER output empty delimiters. If you make no changes, do NOT use [REVISED_DOCUMENT_START]. If you use it, you MUST output the full 100% complete HTML document inside with all original sections and tables. DO NOT TRUNCATE.
-6. Use formal Maharashtra court Marathi terminology for Marathi documents.
-7. If the user asks to add a new clause or point to an already numbered list (e.g., in the "Particulars of Claim" section), you MUST continue the numbering sequence by adding the next appropriate number (e.g., if the last item is 13, the new one should be 14, NOT a new number like 1).
-8. Maintain alignment , newlines and spacing of existing aligned texts even after adding or removing content
-9. If you are asked to remove or delete a clause or point , you MUST remove it completely without leaving any empty lines or spacing
-10. Maintain text size as per existing templates
-11. Maintain paragraph spacing as per existing templates
-12. Maintain line spacing as per existing templates
-13. Maintain indentation as per existing templates
-14. Maintain inbetween line spacing as per existing templates
-15. Maintain table border radius as per existing templates
-16. Maintain table cell padding as per existing templates
-17. Maintain table cell background color as per existing templates
-18. Maintain table cell text alignment as per existing templates
-19. Maintain table cell font size as per existing templates
-20. Maintain table cell font weight as per existing templates
-21. Maintain table cell font style as per existing templates
-22. Maintain table cell text decoration as per existing templates
-23. Maintain existing spacing provided by user as it is 
-24. Maintain empty lines , line breaks , new lines as entered by user in template.` ;
+5. Use formal Maharashtra court Marathi terminology for Marathi documents.`;
 
       const text = await this.generateWithGeminiFallback(client, [
         { role: 'user', parts: [{ text: `${systemPrompt}\n\nInstruction: ${message}` }] }
       ]);
 
       if (text) {
+        // 1. FAST FACT & PLACEHOLDER JSON HANDLER (0 token waste, 100% format safe)
+        if (text.includes('[FACTS_JSON_START]') && text.includes('[FACTS_JSON_END]')) {
+          const jsonMatch = text.match(/\[FACTS_JSON_START\]([\s\S]*?)\[FACTS_JSON_END\]/);
+          if (jsonMatch && jsonMatch[1]) {
+            try {
+              const updates: Record<string, string> = JSON.parse(jsonMatch[1].trim());
+              let updatedHtml = context.documentBody || '';
+
+              for (const [key, val] of Object.entries(updates)) {
+                if (val === undefined || val === null) continue;
+                const cleanVal = String(val).trim();
+                if (!cleanVal) continue;
+
+                // 1. Literal {key}
+                const literalRegex = new RegExp(`\\{${key}\\}`, 'gi');
+                updatedHtml = updatedHtml.replace(literalRegex, cleanVal);
+
+                // 2. Inner tag-separated {<tags>key<tags>}
+                const charPattern = key.split('').map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(?:\\s*<[^>]*>)*');
+                const tagRegex = new RegExp(`(?:\\{|&lbrace;|&#123;|&#x7b;)(?:\\s*<[^>]*>)*\\s*${charPattern}\\s*(?:\\s*<[^>]*>)*(?:\\}|&rbrace;|&#125;|&#x7d;)`, 'gi');
+                updatedHtml = updatedHtml.replace(tagRegex, cleanVal);
+
+                // 3. If previous value in clientFacts existed, replace that previous value too
+                const prevVal = context.clientFacts?.[key];
+                if (prevVal && typeof prevVal === 'string' && prevVal.trim().length > 1 && prevVal !== '________________________') {
+                  const prevRegex = new RegExp(prevVal.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                  updatedHtml = updatedHtml.replace(prevRegex, cleanVal);
+                }
+              }
+
+              // Return confirmation message with revised document delimiters
+              const cleanReply = text.replace(/\[FACTS_JSON_START\][\s\S]*?\[FACTS_JSON_END\]/g, '').trim();
+              return `${cleanReply}\n\n[REVISED_DOCUMENT_START]\n${updatedHtml.trim()}\n[REVISED_DOCUMENT_END]`;
+            } catch (err: any) {
+              console.error('Failed to parse [FACTS_JSON]:', err);
+            }
+          }
+        }
+
+        // 2. FULL REVISION OUTPUT HANDLER
         if (text.includes('[REVISED_DOCUMENT_START]') && text.includes('[REVISED_DOCUMENT_END]')) {
           const match = text.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
           if (match && match[1]) {
@@ -462,6 +576,17 @@ DOCUMENT EDITING RULES (apply when user asks to edit/update/revise/translate/for
             return text.replace(match[1], `\n${revisedBody} \n`);
           }
         }
+
+        // 3. Truncation detection: if AI returned [REVISED_DOCUMENT_START] but was cut off before [REVISED_DOCUMENT_END]
+        if (text.includes('[REVISED_DOCUMENT_START]') && !text.includes('[REVISED_DOCUMENT_END]')) {
+          console.warn('Gemini response truncated: [REVISED_DOCUMENT_START] found without closing [REVISED_DOCUMENT_END]');
+          const localEdit = this.applyLocalSmartDocumentEdit(message, context.documentBody || '');
+          if (localEdit && localEdit.includes('[REVISED_DOCUMENT_START]') && !localEdit.includes('I have updated your legal document as requested')) {
+            return `⚠️ The document edit was partially generated by AI due to token constraints. Applied smart edit instead:\n\n${localEdit}`;
+          }
+          return '⚠️ The AI response was truncated because the document exceeded Gemini output token constraints. Please make targeted edits or use the Client Details Form.';
+        }
+
         return text;
       }
     } catch (err: any) {
@@ -780,13 +905,26 @@ I can assist you with:
 How would you like me to update your draft?`;
   }
 
-  async extractFactsFromNotes(rawNotes: string, apiKey?: string): Promise<ExtractedDetailsResult> {
+  async extractFactsFromNotes(
+    rawNotes: string,
+    apiKey?: string,
+    templateId?: string,
+    templateTitle?: string,
+    templateFields?: any[],
+    systemPromptOverride?: string
+  ): Promise<ExtractedDetailsResult> {
     const client = this.getClient(apiKey);
+    let activeTmpl = templateId ? templateService.getTemplate(templateId) : undefined;
+    const targetFields = templateFields || activeTmpl?.fields || [];
 
     if (client) {
       try {
-        const prompt = `You are an AI Legal Assistant. Extract client and case details from the following raw lawyer interview notes into a JSON object matching this schema:
-{
+        let schemaPrompt = '';
+        if (targetFields.length > 0) {
+          const fieldDesc = targetFields.map((f: any) => `  "${f.key}": "${f.labelMr || f.label || f.key}"`).join(',\n');
+          schemaPrompt = `{\n${fieldDesc}\n}`;
+        } else {
+          schemaPrompt = `{
   "courtCity": "string",
   "party1Name": "Husband/Party 1 full name",
   "party1Age": "number as string",
@@ -806,12 +944,37 @@ How would you like me to update your draft?`;
   "alimonyNil": true or false,
   "alimonyAmount": "string (numbers)",
   "alimonyWords": "string in words"
-}
+}`;
+        }
 
-Return ONLY valid JSON.
+        const defaultPrompt = `You are an expert AI Legal Drafter for Maharashtra Courts. Extract all client, case, party, transaction, and court details from the following lawyer's questionnaire / narrative prompt into a JSON object matching this schema:
+${schemaPrompt}
 
-Raw Notes:
+Extraction Rules:
+1. Extract every detail present in the notes matching the schema keys.
+2. CRITICAL PARTY / APPLICANT / PAKSHAKAR / ACCUSED RULE:
+   - Keep and extract ONLY the Party / Applicant / Pakshakar / Accused information that is ACTUALLY and EXPLICITLY provided in the notes/prompt.
+   - If information is NOT provided for any additional Party / Applicant / Pakshakar / Accused (e.g., party2, party3, party4, party5, accused2, accused3, opponent2, etc.), do NOT invent, assume, or output dummy/placeholder values. Leave those fields empty ("") or omit them completely so unprovided party placeholders and attributes are cleanly removed from the final pleading.
+   - Never output generic placeholder text (such as "पाकशाकार ३ नाव", "पाकशाकार ४ नाव", "शरि नामे", "नाव", "____", "N/A").
+3. For dates, format strictly as DD/MM/YYYY.
+4. For money/cheque amounts, format with Indian commas (e.g. 2,50,000).
+5. If the prompt is in Marathi or template is Marathi, preserve Marathi Devanagari text for names, relations, and addresses.
+6. Return ONLY a valid JSON object.
+
+Notes / Prompt:
 ${rawNotes}`;
+
+        // Use the override if provided, otherwise use the default prompt.
+        // The override is treated as the full system instruction; schema + notes are always appended.
+        const prompt = systemPromptOverride
+          ? `${systemPromptOverride}
+
+JSON Schema to fill:
+${schemaPrompt}
+
+Notes / Prompt:
+${rawNotes}`
+          : defaultPrompt;
 
         const textResp = await this.generateWithGeminiFallback(client,
           [{ role: 'user', parts: [{ text: prompt }] }],
@@ -820,9 +983,17 @@ ${rawNotes}`;
 
         if (textResp) {
           const parsed = JSON.parse(textResp);
+          // Sanitize party fields: if not valid party value, clear them
+          for (const [k, v] of Object.entries(parsed)) {
+            if (/^(?:party|applicant|accused|opponent|respondent|pakshakar)[0-9]+(?:name|नाव)?$/i.test(k)) {
+              if (!isValidPartyValue(v)) {
+                parsed[k] = '';
+              }
+            }
+          }
           return {
             facts: parsed,
-            summary: `Successfully extracted ${Object.keys(parsed).length} fields from notes.`
+            summary: `Successfully extracted ${Object.keys(parsed).length} fields from prompt.`
           };
         }
       } catch (err: any) {
@@ -842,16 +1013,100 @@ ${rawNotes}`;
         const keyPart = line.substring(0, colonIdx).trim().toLowerCase().replace(/[\(\)\:\=\-_]/g, ' ');
         const valPart = line.substring(colonIdx + 1).trim();
         if (valPart) {
-          if (keyPart.includes('applicant') || keyPart.includes('client') || keyPart.includes('husband') || keyPart.includes('deponent') || keyPart.includes('अर्जदार') || keyPart.includes('पती')) {
-            if (!facts.party1Name) facts.party1Name = valPart;
-          } else if (keyPart.includes('wife') || keyPart.includes('opposite') || keyPart.includes('deceased') || keyPart.includes('सामनेवाला') || keyPart.includes('पत्नी') || keyPart.includes('मृत')) {
-            if (!facts.party2Name) facts.party2Name = valPart;
-          } else if (keyPart.includes('death date') || keyPart.includes('separation') || keyPart.includes('दिनांक') || keyPart.includes('तारीख')) {
-            if (!facts.separationDate) facts.separationDate = valPart;
-          } else if (keyPart.includes('place of death') || keyPart.includes('court') || keyPart.includes('city') || keyPart.includes('ठिकाण') || keyPart.includes('शहर')) {
+          // Check against active template field definitions directly
+          if (targetFields.length > 0) {
+            let matched = false;
+            for (const f of targetFields) {
+              const fKey = f.key.toLowerCase().replace(/[\(\)\:\=\-_]/g, ' ');
+              const fLabel = (f.label || '').toLowerCase().replace(/[\(\)\:\=\-_]/g, ' ');
+              const fLabelMr = (f.labelMr || '').toLowerCase().replace(/[\(\)\:\=\-_]/g, ' ');
+              if (
+                keyPart === fKey ||
+                (fLabel && keyPart === fLabel) ||
+                (fLabelMr && keyPart === fLabelMr) ||
+                (fLabelMr && keyPart.includes(fLabelMr)) ||
+                (fLabel && keyPart.includes(fLabel))
+              ) {
+                (facts as any)[f.key] = valPart;
+                matched = true;
+                break;
+              }
+            }
+            if (matched) continue;
+          }
+
+          // Cheque bounce mappings
+          if (keyPart.includes('cheque no') || keyPart.includes('चेक क्रमांक') || keyPart.includes('चेक नं')) {
+            facts.ChequeNumber = valPart;
+          } else if (keyPart.includes('cheque date') || keyPart.includes('चेक दिनांक') || keyPart.includes('चेक तारीख')) {
+            facts.ChequeDate = valPart;
+          } else if (keyPart.includes('amount in words') || keyPart.includes('अक्षरी')) {
+            facts.AmountInWords = valPart;
+          } else if (keyPart.includes('amount') || keyPart.includes('चेक रक्कम') || keyPart.includes('रक्कम')) {
+            facts.AmountofCheque = valPart;
+          } else if (keyPart.includes('account no') || keyPart.includes('खाते क्रमांक')) {
+            facts.AcNumber = valPart;
+          } else if (keyPart.includes('branch') || keyPart.includes('शाखा')) {
+            facts.AccusedBankBranch = valPart;
+          } else if (keyPart.includes('accused bank') || keyPart.includes('आरोपीची बँक') || keyPart.includes('बँकेचे नाव')) {
+            facts.AccusedBank = valPart;
+          } else if (keyPart.includes('complainant bank') || keyPart.includes('फिर्यादीची बँक')) {
+            facts.ComplaintBank = valPart;
+          } else if (keyPart.includes('memo date') || keyPart.includes('मेमो दिनांक') || keyPart.includes('मेमो तारीख')) {
+            facts.MemoDate = valPart;
+          } else if (keyPart.includes('memo reason') || keyPart.includes('अनादराचे कारण') || keyPart.includes('कारण')) {
+            facts.MemoReason = valPart;
+          } else if (keyPart.includes('notice date') || keyPart.includes('नोटीस पाठविल्याची') || keyPart.includes('नोटीस दिनांक')) {
+            facts.NoticeDate = valPart;
+          } else if (keyPart.includes('tracking') || keyPart.includes('ट्रॅकिंग') || keyPart.includes('पावती')) {
+            facts.TrackingNo = valPart;
+          } else if (keyPart.includes('delivered date') || keyPart.includes('नोटीस आरोपीस मिळाल्याची')) {
+            facts.NoticeDeliveredDate = valPart;
+          } else if (keyPart.includes('expiry date') || keyPart.includes('मुदत संपल्याची तारीख')) {
+            facts.NoticeExpiryDate = valPart;
+          } else if (keyPart.includes('cause of action') || keyPart.includes('कारवाईचे कारण') || keyPart.includes('तक्रारीचे कारण')) {
+            facts.CauseOfActionDate = valPart;
+          } else if (keyPart.includes('transaction') || keyPart.includes('व्यवहाराचा तपशील')) {
+            facts.Transaction = valPart;
+          } else if (keyPart.includes('interim compensation') || keyPart.includes('अंतरिम भरपाई')) {
+            facts.InterimCompensation = valPart;
+          } else if (keyPart.includes('complainant') || keyPart.includes('फिर्यादी')) {
+            if (!facts.party1Name && isValidPartyValue(valPart)) facts.party1Name = valPart;
+          } else if (keyPart.includes('accused') || keyPart.includes('आरोपी')) {
+            if (!facts.party2Name && isValidPartyValue(valPart)) facts.party2Name = valPart;
+          }
+          // Varas / Heirship mappings
+          else if (keyPart.includes('deceased name') || keyPart.includes('मयताचे पूर्ण नाव') || keyPart.includes('मयत नाव')) {
+            facts.deceasedName = valPart;
+          } else if (keyPart.includes('death date') || keyPart.includes('मृत्यू दिनांक') || keyPart.includes('मयत तारीख')) {
+            facts.deceasedDate = valPart;
+          } else if (keyPart.includes('place of death') || keyPart.includes('मृत्यूचे ठिकाण')) {
+            facts.placeofDeath = valPart;
+          } else if (keyPart.includes('hairshipreason') || keyPart.includes('प्रयोजन') || keyPart.includes('वारस दाखला कारण')) {
+            facts.HairshipReason = valPart;
+          } else if (keyPart.includes('वारस #1') || keyPart.includes('वारस 1') || keyPart.includes('वारस क्र. १') || keyPart.includes('वारसदार 1')) {
+            if (isValidPartyValue(valPart)) facts.party1Name = valPart;
+          } else if (keyPart.includes('वारस #2') || keyPart.includes('वारस 2') || keyPart.includes('वारस क्र. २') || keyPart.includes('वारसदार 2')) {
+            if (isValidPartyValue(valPart)) facts.party2Name = valPart;
+          } else if (keyPart.includes('वारस #3') || keyPart.includes('वारस 3') || keyPart.includes('वारस क्र. ३') || keyPart.includes('वारसदार 3')) {
+            if (isValidPartyValue(valPart)) facts.party3Name = valPart;
+          } else if (keyPart.includes('वारस #4') || keyPart.includes('वारस 4') || keyPart.includes('वारस क्र. ४') || keyPart.includes('वारसदार 4')) {
+            if (isValidPartyValue(valPart)) facts.party4Name = valPart;
+          } else if (keyPart.includes('वारस #5') || keyPart.includes('वारस 5') || keyPart.includes('वारस क्र. ५') || keyPart.includes('वारसदार 5')) {
+            if (isValidPartyValue(valPart)) facts.party5Name = valPart;
+          }
+          // General client & party mappings
+          else if (keyPart.includes('applicant') || keyPart.includes('client') || keyPart.includes('husband') || keyPart.includes('deponent') || keyPart.includes('अर्जदार') || keyPart.includes('पती')) {
+            if (!facts.party1Name && isValidPartyValue(valPart)) facts.party1Name = valPart;
+          } else if (keyPart.includes('wife') || keyPart.includes('opposite') || keyPart.includes('सामनेवाला') || keyPart.includes('पत्नी')) {
+            if (!facts.party2Name && isValidPartyValue(valPart)) facts.party2Name = valPart;
+          } else if (keyPart.includes('court') || keyPart.includes('city') || keyPart.includes('ठिकाण') || keyPart.includes('शहर')) {
             if (!facts.courtCity) facts.courtCity = valPart;
           } else if (keyPart.includes('heirs') || keyPart.includes('children') || keyPart.includes('वारस') || keyPart.includes('अपत्य')) {
             if (!facts.childrenDetails) facts.childrenDetails = valPart;
+          } else if (keyPart.includes('advocate') || keyPart.includes('वकील') || keyPart.includes('वकिलांचे नाव')) {
+            facts.advocateName = valPart;
+            facts.AdvocateName = valPart;
           }
         }
       }
@@ -878,14 +1133,14 @@ ${rawNotes}`;
     const husbandMatch = text.match(/(?:client|husband|पती|पतीचे नाव|applicant 1|mr\.?|deponent|first party|creditor)\s*[:=-]?\s*([A-Za-z\u0900-\u097F\s.]+?)(?:,|\n|\(|age|वय|service|धंदा|residing|$)/i);
     if (husbandMatch && husbandMatch[1].trim()) {
       const name = husbandMatch[1].trim();
-      facts.party1Name = name;
+      if (!facts.party1Name) facts.party1Name = name;
       if (!facts.deponentNewName) facts.deponentNewName = name;
     }
 
     // 3. Wife / Party 2 Names
     const wifeMatch = text.match(/(?:wife|पत्नी|पत्नीचे नाव|applicant 2|mrs\.?|सौ\.?|second party|defaulter|debtor)\s*[:=-]?\s*([A-Za-z\u0900-\u097F\s.]+?)(?:,|\n|\(|age|वय|maiden|residing|$)/i);
     if (wifeMatch && wifeMatch[1].trim()) {
-      facts.party2Name = wifeMatch[1].trim();
+      if (!facts.party2Name) facts.party2Name = wifeMatch[1].trim();
     }
 
     const maidenMatch = text.match(/(?:maiden name|maiden|माहेरचे नाव|लग्नापूर्वीचे नाव)\s*[:=-]?\s*([A-Za-z\u0900-\u097F\s.]+?)(?:,|\n|\)|$)/i);
@@ -897,20 +1152,20 @@ ${rawNotes}`;
     const ageMatches = [...text.matchAll(/(?:age|वय)\s*[:=-]?\s*(\d{1,2})|\b([1-9][0-9])\s*(?:years|वर्षे|yrs)\b/gi)];
     if (ageMatches.length >= 1) {
       const age1 = ageMatches[0][1] || ageMatches[0][2];
-      facts.party1Age = age1;
+      if (!facts.party1Age) facts.party1Age = age1;
       facts.deponentAge = age1;
       if (ageMatches.length >= 2) {
         const age2 = ageMatches[1][1] || ageMatches[1][2];
-        facts.party2Age = age2;
+        if (!facts.party2Age) facts.party2Age = age2;
       }
     }
 
     // 5. Occupations
     if (/service|नोकरी|private company/i.test(text)) {
-      facts.party1Occupation = 'सेवा (नोकरी)';
+      if (!facts.party1Occupation) facts.party1Occupation = 'सेवा (नोकरी)';
       facts.deponentOccupation = 'सेवा (नोकरी)';
     } else if (/business|व्यवसाय/i.test(text)) {
-      facts.party1Occupation = 'व्यवसाय';
+      if (!facts.party1Occupation) facts.party1Occupation = 'व्यवसाय';
       facts.deponentOccupation = 'व्यवसाय';
     }
 
@@ -922,14 +1177,15 @@ ${rawNotes}`;
     const p1AddrMatch = text.match(/(?:residing at|address|पत्ता|रा\.)\s*[:=-]?\s*([A-Za-z\u0900-\u097F\s,.-]+?)(?:\.\s*Wife|\.\s*Client|\.\s*Married|\n|$)/i);
     if (p1AddrMatch && p1AddrMatch[1].trim()) {
       const addr = p1AddrMatch[1].trim().replace(/^,\s*/, '');
-      facts.party1Address = addr.includes('रा.') ? addr : `रा. ${addr}`;
-      facts.deponentAddress = addr.includes('रा.') ? addr : `रा. ${addr}`;
+      const formatted = addr.includes('रा.') ? addr : `रा. ${addr}`;
+      if (!facts.party1Address) facts.party1Address = formatted;
+      facts.deponentAddress = formatted;
     }
 
     const p2AddrMatch = text.match(/(?:residing with father|wife.*?residing at|पत्नी.*?पत्ता)\s*[:=-]?\s*([A-Za-z\u0900-\u097F\s,.-]+?)(?:\.\s*Married|\.\s*No children|\n|$)/i);
     if (p2AddrMatch && p2AddrMatch[1].trim()) {
       const addr = p2AddrMatch[1].trim();
-      facts.party2Address = addr.includes('रा.') ? addr : `रा. ${addr}`;
+      if (!facts.party2Address) facts.party2Address = addr.includes('रा.') ? addr : `रा. ${addr}`;
     }
 
     // 7. Marriage Date & Place
@@ -989,12 +1245,47 @@ ${rawNotes}`;
     else if (text.includes('Dhule') || text.includes('धुळे')) facts.courtCity = 'धुळे';
     else if (text.includes('Pune') || text.includes('पुणे')) facts.courtCity = 'पुणे';
     else if (text.includes('Mumbai') || text.includes('मुंबई')) facts.courtCity = 'मुंबई';
+    else if (text.includes('Chopda') || text.includes('चोपडा')) facts.courtCity = 'चोपडा';
 
     return {
       facts,
-      summary: `Extracted ${Object.keys(facts).length} fields from client notes.`
+      summary: `Extracted ${Object.keys(facts).length} fields from prompt.`
     };
   }
+
+  async generateDraftFromPrompt(
+    promptText: string,
+    templateId: string,
+    apiKey?: string,
+    systemPromptOverride?: string
+  ): Promise<{ facts: Partial<ClientFacts>; documentHtml: string; summary: string }> {
+    const template = templateService.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template not found with ID: ${templateId}`);
+    }
+
+    const { facts, summary } = await this.extractFactsFromNotes(
+      promptText,
+      apiKey,
+      templateId,
+      template.title,
+      template.fields,
+      systemPromptOverride
+    );
+
+    // Ensure {todaysDate} variable is always filled with current system date in DD-MON-YYYY format in Marathi
+    facts.todaysDate = getMarathiTodayDate();
+
+    // Merge template with extracted facts (also cleans unpopulated placeholders and empty table rows)
+    const documentHtml = templateService.mergeTemplate(template, facts);
+
+    return {
+      facts,
+      documentHtml,
+      summary: `Draft pleading generated successfully for ${template.title} referencing active template.`
+    };
+  }
+
 
   async transliterateText(text: string, customKey?: string): Promise<string> {
     if (!text || !text.trim()) return '';

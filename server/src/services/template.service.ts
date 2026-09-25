@@ -1,5 +1,6 @@
 import { templateStore } from './template-store.service.js';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult } from '../types/index.js';
+import { getMarathiTodayDate, removePlaceholdersWithSpaces, removeEmptyTableRows, cleanUnprovidedPartyBlocks, isValidPartyValue } from '../utils/date.utils.js';
 
 function formatToDDMMYYYY(val: string | undefined): string {
   if (!val || !val.trim()) return '';
@@ -40,6 +41,19 @@ export class TemplateService {
 
   mergeTemplate(template: LegalTemplate, facts: ClientFacts): string {
     let text = template.templateText;
+
+    // Sanitize facts: convert dummy/generic placeholders to empty strings
+    const cleanFacts: Record<string, any> = { ...facts };
+    for (const [k, v] of Object.entries(cleanFacts)) {
+      if (/^(?:party|applicant|accused|opponent|respondent|pakshakar)[0-9]+(?:name|नाव)?$/i.test(k)) {
+        if (!isValidPartyValue(v)) {
+          cleanFacts[k] = '';
+        }
+      }
+    }
+
+    // Pre-pass: Remove all document blocks, paragraphs, and table rows for unprovided parties
+    text = cleanUnprovidedPartyBlocks(text, cleanFacts);
 
     // Derived settlement clauses for Section 13B
     let settlementClauses = '';
@@ -110,12 +124,12 @@ export class TemplateService {
       party1Address: (facts.party1Address && facts.party1Address.trim()) ? facts.party1Address : '________________________',
 
       party2Prefix: (facts.party2Prefix && facts.party2Prefix.trim()) ? facts.party2Prefix : 'सौ.',
-      party2Name: (facts.party2Name && facts.party2Name.trim()) ? facts.party2Name : '________________________',
-      party2MaidenName: (facts.party2MaidenName && facts.party2MaidenName.trim()) ? facts.party2MaidenName : '________________________',
-      party2Age: (facts.party2Age && facts.party2Age.trim()) ? facts.party2Age : '____',
-      party2Occupation: (facts.party2Occupation && facts.party2Occupation.trim()) ? facts.party2Occupation : 'गृहिणी',
-      party2Guardian: (facts.party2Guardian && facts.party2Guardian.trim()) ? facts.party2Guardian : 'वडिलांचे नाव',
-      party2Address: (facts.party2Address && facts.party2Address.trim()) ? facts.party2Address : '________________________',
+      party2Name: (facts.party2Name && facts.party2Name.trim()) ? facts.party2Name : (template.id.includes('divorce') ? '________________________' : ''),
+      party2MaidenName: (facts.party2MaidenName && facts.party2MaidenName.trim()) ? facts.party2MaidenName : (template.id.includes('divorce') ? '________________________' : ''),
+      party2Age: (facts.party2Age && facts.party2Age.trim()) ? facts.party2Age : '',
+      party2Occupation: (facts.party2Occupation && facts.party2Occupation.trim()) ? facts.party2Occupation : '',
+      party2Guardian: (facts.party2Guardian && facts.party2Guardian.trim()) ? facts.party2Guardian : '',
+      party2Address: (facts.party2Address && facts.party2Address.trim()) ? facts.party2Address : '',
 
       marriageDate: formatToDDMMYYYY(facts.marriageDate) || '____/____/________',
       marriagePlace: (facts.marriagePlace && facts.marriagePlace.trim()) ? facts.marriagePlace : '________________',
@@ -156,10 +170,13 @@ export class TemplateService {
       reasonForChange: (facts.reasonForChange && facts.reasonForChange.trim()) ? facts.reasonForChange : 'अंकशास्त्र, ज्योतिषशास्त्र व व्यक्तिगत स्वेच्छेनुसार',
       idProofDetails: (facts.idProofDetails && facts.idProofDetails.trim()) ? facts.idProofDetails : 'आधार कार्ड व पॅन कार्ड',
       authorityName: (facts.authorityName && facts.authorityName.trim()) ? facts.authorityName : 'मे. कार्यकारी दंडाधिकारी / नोटरी पब्लिक',
+
+      // {todaysDate} variable shall be always filled with current system date in DD-MON-YYYY format in marathi
+      todaysDate: getMarathiTodayDate(),
     };
 
     // Replace any other custom facts if non-empty
-    for (const [key, val] of Object.entries(facts)) {
+    for (const [key, val] of Object.entries(cleanFacts)) {
       if (val !== undefined && val !== null) {
         const strVal = String(val);
         if (strVal.trim().length > 0) {
@@ -167,6 +184,12 @@ export class TemplateService {
         }
       }
     }
+
+    // Force {todaysDate} to always be current system date in DD-MON-YYYY format with English numbers
+    const marathiToday = getMarathiTodayDate();
+    replacements.todaysDate = marathiToday;
+    replacements.todayDate = marathiToday;
+    replacements.todaysdate = marathiToday;
 
     for (const [key, val] of Object.entries(replacements)) {
       if (!key || val === undefined || val === null) continue;
@@ -180,6 +203,19 @@ export class TemplateService {
       const literalRegex = new RegExp(`\\{${escapedKey}\\}`, 'gi');
       text = text.replace(literalRegex, val);
     }
+
+    // Direct replacement of {todaysDate} variations to ensure English numbers
+    text = text.replace(/\{(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\}/gi, marathiToday);
+    text = text.replace(/(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi, marathiToday);
+
+    // 1. Remove all remaining placeholders with brackets and replace with empty spaces
+    text = removePlaceholdersWithSpaces(text);
+
+    // 2. If entire table row is having empty / space value -- that row shall get removed
+    text = removeEmptyTableRows(text);
+
+    // 3. Final cleanup of any unprovided party residual shells or dead dot signature lines
+    text = cleanUnprovidedPartyBlocks(text, cleanFacts);
 
     return text;
   }

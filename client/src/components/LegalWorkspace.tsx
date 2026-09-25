@@ -4,7 +4,7 @@ import { CopilotTextarea } from '@copilotkit/react-textarea';
 import '@copilotkit/react-textarea/styles.css';
 import { useCopilotChatSuggestions } from '@copilotkit/react-ui';
 import { TipTapEditor } from './TipTapEditor';
-import { LexicalEditor } from './LexicalEditor';
+
 import {
   Scale,
   FileText,
@@ -53,6 +53,10 @@ import {
   Menu,
   Wand2,
   Eraser,
+  ZoomIn,
+  ZoomOut,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
@@ -60,8 +64,16 @@ import { ClientNotesModal } from './ClientNotesModal';
 import { TemplateManagerModal } from './TemplateManagerModal';
 import { FormWizardModal } from './FormWizardModal';
 import { convertToDevanagari } from '../utils/transliterate';
-import { formatToDDMMYYYY, formatToYYYYMMDD } from '../utils/date';
+import {
+  formatToDDMMYYYY,
+  formatToYYYYMMDD,
+  getMarathiTodayDate,
+  removePlaceholdersWithSpaces,
+  removeEmptyTableRows,
+  cleanUnprovidedPartyBlocks
+} from '../utils/date';
 import { parseKeyValueNotes } from '../utils/keyValueParser';
+import { getQuestionnaireForTemplate } from '../utils/templateQuestionnaires';
 
 interface LegalWorkspaceProps {
   apiKey: string;
@@ -97,6 +109,34 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
   const [transliteratingField, setTransliteratingField] = useState<string | null>(null);
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
+
+  // Samrat Legal Layout & Narrative Prompt drafting states
+  const [activeLeftTab, setActiveLeftTab] = useState<'prompt' | 'form'>('prompt');
+  const [promptText, setPromptText] = useState<string>('');
+  const [isGeneratingFromPrompt, setIsGeneratingFromPrompt] = useState<boolean>(false);
+  const [promptSuccessMsg, setPromptSuccessMsg] = useState<string | null>(null);
+  const [showSystemPrompt, setShowSystemPrompt] = useState<boolean>(false);
+  const DEFAULT_SYSTEM_PROMPT = `You are an expert AI Legal Drafter for Maharashtra Courts. Extract all client, case, party, transaction, and court details from the following lawyer's questionnaire / narrative prompt into a JSON object matching the template schema.
+
+Extraction Rules:
+1. Extract every detail present in the notes matching the schema keys.
+2. CRITICAL PARTY RULE: Keep and extract ONLY the Party / Applicant / Pakshakar / Accused information that is ACTUALLY and EXPLICITLY provided. If information is NOT provided for any additional party, do NOT invent or output dummy/placeholder values. Leave those fields empty ("") or omit them completely.
+3. Never output generic placeholder text (such as "पाकशाकार ३ नाव", "____", "N/A").
+4. For dates, format strictly as DD/MM/YYYY.
+5. For money/cheque amounts, format with Indian commas (e.g. 2,50,000).
+6. If the prompt is in Marathi, preserve Marathi Devanagari text for names, relations, and addresses.
+7. Return ONLY a valid JSON object.`;
+  const [systemPromptOverride, setSystemPromptOverride] = useState<string>(DEFAULT_SYSTEM_PROMPT);
+  const lastLoadedTemplateIdRef = useRef<string>('');
+
+  // Samrat Legal A4 Court Document Toolbar & Editor states
+  const [courtDocFontSize, setCourtDocFontSize] = useState<number>(14);
+  const [isColorMode, setIsColorMode] = useState<boolean>(true);
+  const [isDirectA4Editing, setIsDirectA4Editing] = useState<boolean>(true);
+  const [zoomLevel, setZoomLevel] = useState<number>(100);
+  const [isFitToMobile, setIsFitToMobile] = useState<boolean>(false);
+  const [docFilterSection, setDocFilterSection] = useState<'all' | 'original' | 'affidavit'>('all');
+  const documentCanvasContainerRef = useRef<HTMLDivElement>(null);
 
   // Dedicated Device Layout Mode state ('auto' | 'desktop' | 'tablet' | 'mobile')
   const [deviceMode, setDeviceMode] = useState<'auto' | 'desktop' | 'tablet' | 'mobile'>(() => {
@@ -163,7 +203,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   };
 
   // Live Document Preview Visual Rich Text Editor state & helpers
-  const [docEditorMode, setDocEditorMode] = useState<'visual' | 'code' | 'ai' | 'lexical'>('ai');
+  const [docEditorMode, setDocEditorMode] = useState<'visual' | 'code' | 'ai'>('visual');
   const [paperSize, setPaperSize] = useState<'legal' | 'a4'>('a4');
   const [copiedFormat, setCopiedFormat] = useState<{
     bold?: boolean;
@@ -273,7 +313,8 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   const replacePlaceholdersInHtml = (
     htmlText: string,
     currentFacts: ClientFacts,
-    tmpl?: LegalTemplate
+    tmpl?: LegalTemplate,
+    cleanUnpopulatedPlaceholders: boolean = false
   ): string => {
     if (!htmlText) return '';
     let result = htmlText;
@@ -297,6 +338,12 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       factsMap.courtCity = currentFacts?.courtCity || 'अमळनेर';
     }
 
+    // {todaysDate} variable shall be always filled with current system date in DD-MON-YYYY with English numbers
+    const marathiToday = getMarathiTodayDate();
+    factsMap.todaysDate = marathiToday;
+    factsMap.todayDate = marathiToday;
+    factsMap.todaysdate = marathiToday;
+
     for (const [key, value] of Object.entries(factsMap)) {
       if (!key || typeof value !== 'string') continue;
       const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -308,6 +355,21 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
 
       const literalRegex = new RegExp(`\\{${escapedKey}\\}`, 'gi');
       result = result.replace(literalRegex, value);
+    }
+
+    // Direct replacement of {todaysDate} variations to ensure English numbers
+    result = result.replace(/\{(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\}/gi, marathiToday);
+    result = result.replace(/(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi, marathiToday);
+
+    if (cleanUnpopulatedPlaceholders) {
+      // 0. Clean unprovided party blocks, paragraphs, and attributes first
+      result = cleanUnprovidedPartyBlocks(result, factsMap);
+      // 1. Remove all remaining placeholders with brackets and replace with empty spaces
+      result = removePlaceholdersWithSpaces(result);
+      // 2. If entire table row is having empty / space value -- that row shall get removed
+      result = removeEmptyTableRows(result);
+      // 3. Final cleanup pass for party blocks
+      result = cleanUnprovidedPartyBlocks(result, factsMap);
     }
 
     return result;
@@ -762,12 +824,14 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
     if (target) {
       isSwitchingRef.current = true;
       setActiveDraftId(target.id);
-      setFacts(target.facts || {});
+      const draftFacts = { ...(target.facts || {}) };
+      draftFacts.todaysDate = getMarathiTodayDate();
+      setFacts(draftFacts);
 
       const tmpl = targetTmpl || templates.find((t) => t.id === target.templateId) || activeTemplate;
       let bodyToSet = target.documentBody || '';
       if ((!bodyToSet || (tmpl && target.templateId !== tmpl.id)) && tmpl) {
-        bodyToSet = replacePlaceholdersInHtml(tmpl.templateText || '', target.facts || {}, tmpl);
+        bodyToSet = replacePlaceholdersInHtml(tmpl.templateText || '', draftFacts, tmpl);
       }
 
       setDocumentBody(bodyToSet);
@@ -809,6 +873,9 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
         });
       }
 
+      // Always guarantee {todaysDate} uses current system date in DD-MON-YYYY with English numbers
+      freshFacts.todaysDate = getMarathiTodayDate();
+
       const partyName = getDraftPartyName(freshFacts, targetTemplate.fields);
       const initialBody = replacePlaceholdersInHtml(targetTemplate.templateText || '', freshFacts, targetTemplate);
       const initialDraft: DocumentDraft = {
@@ -848,6 +915,96 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       console.error('Failed to save drafts:', e);
     }
   }, [drafts]);
+
+  // Auto-initialize prompt questionnaire when template changes (referencing active selected template)
+  useEffect(() => {
+    if (activeTemplate && lastLoadedTemplateIdRef.current !== activeTemplate.id) {
+      lastLoadedTemplateIdRef.current = activeTemplate.id;
+      const q = getQuestionnaireForTemplate(activeTemplate);
+      setPromptText(q.samplePrompt || q.blankPrompt);
+    }
+  }, [activeTemplate]);
+
+  // Generate draft document referencing active selected template according to data prompt
+  const handleGenerateFromPrompt = async () => {
+    if (!promptText.trim()) {
+      alert('कृपया घटनाक्रम / प्रश्नावली मजकूर प्रविष्ट करा.');
+      return;
+    }
+    if (!activeTemplate) return;
+
+    setIsGeneratingFromPrompt(true);
+    setPromptSuccessMsg(null);
+
+    try {
+      const res = await fetch('/api/copilot/generate-from-prompt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'x-gemini-api-key': apiKey } : {})
+        },
+        body: JSON.stringify({
+          promptText,
+          templateId: activeTemplate.id,
+          apiKey,
+          systemPromptOverride: systemPromptOverride !== DEFAULT_SYSTEM_PROMPT ? systemPromptOverride : undefined
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.facts) {
+          const mergedFacts = { ...facts, ...data.facts, todaysDate: getMarathiTodayDate() };
+          setFacts(mergedFacts);
+        }
+        if (data.documentHtml) {
+          const effectiveFacts = data.facts ? { ...facts, ...data.facts } : facts;
+          // 0. Clean unprovided party blocks first
+          let cleanHtml = cleanUnprovidedPartyBlocks(data.documentHtml, effectiveFacts);
+          // 1. Remove placeholders with brackets and replace with empty spaces
+          cleanHtml = removePlaceholdersWithSpaces(cleanHtml);
+          // 2. If entire table row is having empty / space value -- that row shall get removed
+          cleanHtml = removeEmptyTableRows(cleanHtml);
+          // 3. Final party blocks cleanup
+          cleanHtml = cleanUnprovidedPartyBlocks(cleanHtml, effectiveFacts);
+
+          setDocumentBody(cleanHtml);
+          if (docRichEditorRef.current) {
+            docRichEditorRef.current.innerHTML = cleanHtml;
+          }
+        }
+        setPromptSuccessMsg(`✅ ${activeTemplate.title} मसुदा यशस्वीरित्या तयार झाला!`);
+        setTimeout(() => setPromptSuccessMsg(null), 5000);
+      } else {
+        throw new Error(`Server returned ${res.status}`);
+      }
+    } catch (err: any) {
+      console.warn('Backend prompt generation fallback to local extractor:', err?.message);
+      const extracted = parseKeyValueNotes(promptText, activeTemplate.fields);
+      const mergedFacts = { ...facts, ...extracted, todaysDate: getMarathiTodayDate() };
+      setFacts(mergedFacts);
+
+      // 0. Pre-clean unprovided party blocks
+      let mergedHtml = cleanUnprovidedPartyBlocks(activeTemplate.templateText || '', mergedFacts);
+      // 1. Replace placeholders and clean unpopulated placeholders with empty spaces
+      mergedHtml = replacePlaceholdersInHtml(mergedHtml, mergedFacts, activeTemplate, true);
+      mergedHtml = cleanUnprovidedPartyBlocks(mergedHtml, mergedFacts);
+      mergedHtml = removePlaceholdersWithSpaces(mergedHtml);
+      // 2. If entire table row is having empty / space value -- that row shall get removed
+      mergedHtml = removeEmptyTableRows(mergedHtml);
+      mergedHtml = cleanUnprovidedPartyBlocks(mergedHtml, mergedFacts);
+
+      setDocumentBody(mergedHtml);
+      if (docRichEditorRef.current) {
+        docRichEditorRef.current.innerHTML = mergedHtml;
+      }
+
+      setPromptSuccessMsg(`✅ ${activeTemplate.title} मसुदा स्थानिक प्रणालीद्वारे तयार झाला!`);
+      setTimeout(() => setPromptSuccessMsg(null), 5000);
+    } finally {
+      setIsGeneratingFromPrompt(false);
+    }
+  };
 
   // Auto-sync active draft's facts & documentBody whenever facts or documentBody change
   useEffect(() => {
@@ -1028,7 +1185,6 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
       category: activeTemplate?.category,
       language: activeTemplate?.language,
       documentBody: documentBody || '',
-      body: documentBody || '',
     },
   });
 
@@ -2105,32 +2261,126 @@ Always include: one to fill client details, one to audit compliance, one templat
         </div>
       </header>
 
+      {/* Samrat Legal Pleading Navigation Bar: 1. घटनाक्रम (Prompt) | 2. फॉर्म संपादन (Editor) | 3. कोर्ट दस्तऐवज (A4 View) | स्प्लिट व्ह्यू (Split View) */}
+      <div className="no-print border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-50/95 dark:bg-slate-950/80 backdrop-blur-md px-3 sm:px-6 py-1.5 z-30 shrink-0">
+        <div className="max-w-[1680px] mx-auto flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 overflow-x-auto scrollbar-none flex-nowrap shadow-xs">
+            <button
+              onClick={() => {
+                setViewMode('split');
+                setActiveLeftTab('prompt');
+              }}
+              className={`shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[34px] whitespace-nowrap cursor-pointer ${
+                (viewMode === 'split' || viewMode === 'form') && activeLeftTab === 'prompt'
+                  ? 'bg-amber-600 text-white shadow-md'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Edit3 className="w-3.5 h-3.5 shrink-0" />
+              <span>१. घटनाक्रम</span>
+              <span className="hidden sm:inline text-[11px] opacity-80 font-normal">(Prompt)</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setViewMode('split');
+                setActiveLeftTab('form');
+              }}
+              className={`shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[34px] whitespace-nowrap cursor-pointer ${
+                (viewMode === 'split' || viewMode === 'form') && activeLeftTab === 'form'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5 shrink-0" />
+              <span>२. फॉर्म संपादन</span>
+              <span className="hidden sm:inline text-[11px] opacity-80 font-normal">(Editor)</span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block shrink-0"></span>
+            </button>
+
+            <button
+              onClick={() => setViewMode('preview')}
+              className={`shrink-0 flex items-center justify-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[34px] whitespace-nowrap cursor-pointer ${
+                viewMode === 'preview'
+                  ? 'bg-blue-600 text-white shadow-md'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5 shrink-0" />
+              <span>३. कोर्ट दस्तऐवज</span>
+              <span className="hidden sm:inline text-[11px] opacity-80 font-normal">(A4 View)</span>
+            </button>
+
+            <button
+              onClick={() => setViewMode('split')}
+              className={`hidden lg:flex items-center gap-1.5 px-3 py-1.5 sm:px-3.5 sm:py-1.5 rounded-lg text-xs font-semibold transition-all min-h-[34px] whitespace-nowrap cursor-pointer ${
+                viewMode === 'split'
+                  ? 'bg-slate-800 text-white dark:bg-slate-700 shadow-md'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800'
+              }`}
+              title="दोन्ही बाजू एकाच वेळी पहा (Split View)"
+            >
+              <Columns className="w-3.5 h-3.5 shrink-0" />
+              <span>स्प्लिट व्ह्यू</span>
+              <span className="hidden xl:inline text-[11px] opacity-80 font-normal">(Split)</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl bg-slate-100 border border-slate-300 dark:bg-slate-800/90 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 shadow-xs whitespace-nowrap">
+              <span className="text-slate-500 dark:text-slate-400 hidden xs:inline">सक्रिय:</span>
+              <span className="font-bold text-amber-700 dark:text-amber-400 font-marathi">
+                📜 {activeTemplate?.titleMr || activeTemplate?.title}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Touch-optimized Segmented Navigation Bar for Tablet & Mobile Modes */}
       {(effectiveDevice === 'tablet' || effectiveDevice === 'mobile') && (
         <div className="no-print bg-slate-900 border-b border-slate-800 px-3 py-2 flex items-center justify-between shrink-0 z-20 gap-2">
           <div className="flex items-center gap-1 bg-slate-800 p-1 rounded-xl w-full max-w-md border border-slate-700">
             <button
-              onClick={() => setTabletTab('form')}
+              onClick={() => {
+                setTabletTab('form');
+                setActiveLeftTab('prompt');
+              }}
               className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition min-h-[40px] ${
-                tabletTab === 'form'
+                tabletTab === 'form' && activeLeftTab === 'prompt'
+                  ? 'bg-amber-600 text-white shadow-md'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-700'
+              }`}
+            >
+              <Edit3 className="w-4 h-4" />
+              <span>१. घटनाक्रम</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setTabletTab('form');
+                setActiveLeftTab('form');
+              }}
+              className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition min-h-[40px] ${
+                tabletTab === 'form' && activeLeftTab === 'form'
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'text-slate-300 hover:text-white hover:bg-slate-700'
               }`}
             >
-              <FolderEdit className="w-4 h-4" />
-              <span>Client Form Fields</span>
+              <Sliders className="w-4 h-4" />
+              <span>२. फॉर्म संपादन</span>
             </button>
 
             <button
               onClick={() => setTabletTab('canvas')}
               className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition min-h-[40px] ${
                 tabletTab === 'canvas'
-                  ? 'bg-indigo-600 text-white shadow-md'
+                  ? 'bg-blue-600 text-white shadow-md'
                   : 'text-slate-300 hover:text-white hover:bg-slate-700'
               }`}
             >
               <FileText className="w-4 h-4" />
-              <span>Document Canvas</span>
+              <span>३. दस्तऐवज</span>
             </button>
           </div>
 
@@ -2156,116 +2406,314 @@ Always include: one to fill client details, one to audit compliance, one templat
               effectiveDevice !== 'desktop' || viewMode === 'form' ? 'w-full max-w-4xl mx-auto' : 'shrink-0'
             }`}
           >
-            <div className="p-4 sm:p-5 space-y-6">
-              {/* Active Template Header Info & Multi-Document Draft Manager */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-gradient-to-br dark:from-slate-800/80 dark:to-slate-800/40 border border-slate-200 dark:border-slate-700/60 space-y-3 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs uppercase font-semibold tracking-wider text-indigo-600 dark:text-indigo-400">
-                    Active Template
-                  </span>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium">
-                    {activeTemplate?.category.toUpperCase()}
-                  </span>
+            <div className="p-4 sm:p-5 space-y-4">
+              {/* Left Column Sub-Tab Switcher: 1. मूळ मजकूर (Prompt) | 2. फॉर्म संपादन (Editor) */}
+              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                <div className="flex items-center gap-2 overflow-x-auto scrollbar-none flex-nowrap">
+                  <button
+                    type="button"
+                    onClick={() => setActiveLeftTab('prompt')}
+                    className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      activeLeftTab === 'prompt'
+                        ? 'bg-amber-600 text-white shadow'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <Edit3 className="w-3.5 h-3.5 shrink-0" />
+                    <span>१. मूळ मजकूर (Narrative Prompt)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveLeftTab('form')}
+                    className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                      activeLeftTab === 'form'
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <Sliders className="w-3.5 h-3.5 shrink-0" />
+                    <span>२. फॉर्म संपादन (Editor)</span>
+                  </button>
                 </div>
-                <h3 className="font-bold text-slate-900 dark:text-white text-sm sm:text-base">
-                  {activeTemplate?.title}
-                </h3>
-                <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
-                  {activeTemplate?.description}
-                </p>
+              </div>
 
-                {/* Multi-Draft Session Controls */}
-                <div className="pt-2.5 border-t border-slate-200 dark:border-slate-700/60 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                      Document Drafts ({currentTemplateDrafts.length})
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setIsNewDraftModalOpen(true)}
-                      className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow transition cursor-pointer"
-                      title="Create a new document draft from this template"
-                    >
-                      <PlusCircle className="w-3.5 h-3.5" /> + New Document
-                    </button>
+              {/* TAB 1: NARRATIVE QUESTIONNAIRE PROMPT (Samrat Legal style) */}
+              {activeLeftTab === 'prompt' && (
+                <div className="flex flex-col gap-3.5 bg-white border border-slate-200 shadow-sm dark:bg-slate-900/90 dark:border-slate-800 rounded-2xl p-4 sm:p-5">
+                  {promptSuccessMsg && (
+                    <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700/80 rounded-xl text-emerald-800 dark:text-emerald-300 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span>{promptSuccessMsg}</span>
+                    </div>
+                  )}
+
+                  {/* Informational Guidance Banner for Party / Applicant filtering */}
+                  <div className="px-3.5 py-2.5 bg-amber-500/10 border border-amber-500/25 rounded-xl text-amber-900 dark:text-amber-200 text-xs flex items-start gap-2">
+                    <span className="text-sm shrink-0">💡</span>
+                    <div className="leading-relaxed">
+                      <strong>पक्षकार नियम (Party Rule):</strong> केवळ प्रत्यक्ष संबंधित पक्षकार / अर्जदार / वारस / आरोपी यांचीच माहिती भरा. ज्यांची माहिती दिली नसेल, त्यांचे क्रमांक, पत्ते, कोष्टक ओळी व स्वाक्षरी ओळी दस्तऐवजातून आपोआप वगळल्या जातील.
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <select
-                      value={activeDraftId}
-                      onChange={(e) => switchDraft(e.target.value)}
-                      className="flex-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-200 text-xs rounded-xl py-1.5 px-2.5 focus:outline-none focus:border-indigo-500 font-medium truncate cursor-pointer font-marathi"
-                    >
-                      {currentTemplateDrafts.map((d, index) => (
-                        <option key={d.id} value={d.id}>
-                          {d.name || `Draft #${index + 1}`}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                        <FileText className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                        <span>{getQuestionnaireForTemplate(activeTemplate).title}:</span>
+                      </label>
+                      <span className="text-[10px] sm:text-xs bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-semibold">
+                        ⚡ वेळ बचत (Time Saver)
+                      </span>
+                    </div>
 
-                    {currentTemplateDrafts.length > 1 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <button
                         type="button"
-                        onClick={() => handleDeleteDraft(activeDraftId)}
-                        className="p-1.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-xl transition cursor-pointer"
-                        title="Delete current document draft"
+                        onClick={() => {
+                          const q = getQuestionnaireForTemplate(activeTemplate);
+                          setPromptText(q.blankPrompt);
+                        }}
+                        className="text-[11px] px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-500/30 font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                        title="कोरा प्रश्नावली नमुना पूर्ववत करा (Reset to Blank Questionnaire)"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <RefreshCw className="w-3 h-3" />
+                        <span>कोरा नमुना</span>
                       </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const q = getQuestionnaireForTemplate(activeTemplate);
+                          setPromptText(q.samplePrompt);
+                        }}
+                        className="text-[11px] px-2.5 py-1 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-500/30 font-semibold flex items-center gap-1 transition-all cursor-pointer"
+                        title="प्रात्यक्षिक उदाहरण लोड करा (Load Sample Case)"
+                      >
+                        <Sparkles className="w-3 h-3 text-blue-500 dark:text-blue-300" />
+                        <span>उदाहरणासह भरा</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setPromptText('')}
+                        className="text-[11px] px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400 border border-slate-300 dark:border-slate-700 font-semibold transition-all cursor-pointer"
+                        title="मजकूर पुसा (Clear Text)"
+                      >
+                        <span>पुसा</span>
+                      </button>
+
+                      <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono">
+                        {promptText.length} अक्षरे
+                      </span>
+                    </div>
+                  </div>
+
+                  <textarea
+                    rows={16}
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    placeholder="येथे अर्जाची / प्रकरणाची माहिती प्रविष्ट करा किंवा 'उदाहरणासह भरा' वर क्लिक करा..."
+                    className="w-full flex-1 p-3.5 sm:p-4 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs sm:text-sm leading-relaxed focus:bg-white focus:ring-2 focus:ring-amber-500 focus:outline-none placeholder:text-slate-400 dark:bg-slate-950 dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-500 font-marathi resize-y min-h-[380px] sm:min-h-[460px] font-mono leading-relaxed selection:bg-amber-500/30"
+                    spellCheck={false}
+                  />
+
+                  {/* System Prompt Override Panel */}
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowSystemPrompt(v => !v)}
+                      className="w-full flex items-center justify-between px-3.5 py-2.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/60 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">⚙️ AI System Prompt</span>
+                        {systemPromptOverride !== DEFAULT_SYSTEM_PROMPT && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-semibold">Modified</span>
+                        )}
+                      </div>
+                      <span className="text-[11px] text-slate-400 dark:text-slate-500">{showSystemPrompt ? '▲ Close' : '▼ Edit'}</span>
+                    </button>
+
+                    {showSystemPrompt && (
+                      <div className="p-3 bg-white dark:bg-slate-900/60 border-t border-slate-200 dark:border-slate-700 space-y-2">
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                          AI ला दिला जाणारा System Prompt सुधारा. हे prompt AI ने facts कसे extract करावे हे नियंत्रित करते.
+                        </p>
+                        <textarea
+                          rows={8}
+                          value={systemPromptOverride}
+                          onChange={e => setSystemPromptOverride(e.target.value)}
+                          className="w-full p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-[11px] font-mono leading-relaxed focus:ring-2 focus:ring-amber-400 focus:outline-none resize-y min-h-[160px]"
+                          spellCheck={false}
+                          placeholder="AI system prompt येथे टाका..."
+                        />
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-slate-400 font-mono">{systemPromptOverride.length} chars</span>
+                          <button
+                            type="button"
+                            onClick={() => setSystemPromptOverride(DEFAULT_SYSTEM_PROMPT)}
+                            className="text-[10px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-slate-600 font-semibold transition-colors cursor-pointer"
+                            title="Default System Prompt वर परत जा"
+                          >
+                            ↺ Default वर परत जा
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleGenerateFromPrompt}
+                      disabled={isGeneratingFromPrompt}
+                      className="flex-1 py-3.5 px-4 rounded-xl bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 hover:from-amber-500 hover:to-amber-400 text-white font-bold text-xs sm:text-sm shadow-lg shadow-amber-950/30 dark:shadow-amber-950/50 flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-50 min-h-[46px] cursor-pointer"
+                      title="सक्रिय निवडलेल्या टेम्पलेटनुसार विधि-दस्तावेज तयार करा"
+                    >
+                      {isGeneratingFromPrompt ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                          <span>मसुदा तयार होत आहे (Generating Draft)...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4 text-amber-200" />
+                          <span>विधि-दस्तावेज तयार करा (Generate Pleading)</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (effectiveDevice !== 'desktop') {
+                          setTabletTab('canvas');
+                        } else {
+                          setViewMode('preview');
+                        }
+                      }}
+                      className="py-3 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center justify-center gap-1.5 min-h-[46px] cursor-pointer"
+                    >
+                      <Eye className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      <span>दस्तऐवज पहा (View A4)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: STRUCTURED FORM EDITOR */}
+              {activeLeftTab === 'form' && (
+                <div className="space-y-6">
+                  {/* Active Template Header Info & Multi-Document Draft Manager */}
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-gradient-to-br dark:from-slate-800/80 dark:to-slate-800/40 border border-slate-200 dark:border-slate-700/60 space-y-3 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs uppercase font-semibold tracking-wider text-indigo-600 dark:text-indigo-400">
+                        Active Template
+                      </span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium">
+                        {activeTemplate?.category.toUpperCase()}
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-slate-900 dark:text-white text-sm sm:text-base">
+                      {activeTemplate?.title}
+                    </h3>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
+                      {activeTemplate?.description}
+                    </p>
+
+                    {/* Multi-Draft Session Controls */}
+                    <div className="pt-2.5 border-t border-slate-200 dark:border-slate-700/60 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-wider flex items-center gap-1">
+                          <FileText className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                          Document Drafts ({currentTemplateDrafts.length})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setIsNewDraftModalOpen(true)}
+                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1 shadow transition cursor-pointer"
+                          title="Create a new document draft from this template"
+                        >
+                          <PlusCircle className="w-3.5 h-3.5" /> + New Document
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={activeDraftId}
+                          onChange={(e) => switchDraft(e.target.value)}
+                          className="flex-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-slate-200 text-xs rounded-xl py-1.5 px-2.5 focus:outline-none focus:border-indigo-500 font-medium truncate cursor-pointer font-marathi"
+                        >
+                          {currentTemplateDrafts.map((d, index) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name || `Draft #${index + 1}`}
+                            </option>
+                          ))}
+                        </select>
+
+                        {currentTemplateDrafts.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDraft(activeDraftId)}
+                            className="p-1.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-slate-900 border border-slate-300 dark:border-slate-700/80 rounded-xl transition cursor-pointer"
+                            title="Delete current document draft"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Form Input Groups */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                        Client & Case Particulars
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setIsWizardOpen(true)}
+                        className="px-2.5 py-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+                        title="Fill client & case particulars field-by-field using the interactive Form Wizard"
+                      >
+                        <Wand2 className="w-3.5 h-3.5" />
+                        <span>Step-by-Step Wizard</span>
+                      </button>
+                    </div>
+
+                    {/* Dynamic Form Input Groups based on activeTemplate.fields */}
+                    {fieldGroups.length > 0 ? (
+                      fieldGroups.map((group) => {
+                        const header = getGroupHeader(group.key);
+                        return (
+                          <div
+                            key={group.key}
+                            className="space-y-3 p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800"
+                          >
+                            <div className="flex items-center justify-between">
+                              <h5 className={`text-xs font-semibold ${header.color}`}>
+                                {header.title}
+                              </h5>
+                              {header.titleMr && (
+                                <span className="text-[11px] text-slate-500 font-marathi">
+                                  {header.titleMr}
+                                </span>
+                              )}
+                            </div>
+                            <div className="space-y-2.5">
+                              {group.fields.map((field: any) => renderField(field))}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="p-4 rounded-xl bg-slate-100 dark:bg-slate-800/40 text-center text-xs text-slate-500 dark:text-slate-400">
+                        No custom fields required for this template.
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
-
-              {/* Form Input Groups */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                    Client & Case Particulars
-                  </h4>
-                  <button
-                    type="button"
-                    onClick={() => setIsWizardOpen(true)}
-                    className="px-2.5 py-1 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer"
-                    title="Fill client & case particulars field-by-field using the interactive Form Wizard"
-                  >
-                    <Wand2 className="w-3.5 h-3.5" />
-                    <span>Step-by-Step Wizard</span>
-                  </button>
-                </div>
-
-                {/* Dynamic Form Input Groups based on activeTemplate.fields */}
-                {fieldGroups.length > 0 ? (
-                  fieldGroups.map((group) => {
-                    const header = getGroupHeader(group.key);
-                    return (
-                      <div
-                        key={group.key}
-                        className="space-y-3 p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800"
-                      >
-                        <div className="flex items-center justify-between">
-                          <h5 className={`text-xs font-semibold ${header.color}`}>
-                            {header.title}
-                          </h5>
-                          {header.titleMr && (
-                            <span className="text-[11px] text-slate-500 font-marathi">
-                              {header.titleMr}
-                            </span>
-                          )}
-                        </div>
-                        <div className="space-y-2.5">
-                          {group.fields.map((field: any) => renderField(field))}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="p-4 rounded-xl bg-slate-100 dark:bg-slate-800/40 text-center text-xs text-slate-500 dark:text-slate-400">
-                    No custom fields required for this template.
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           </div>
         )}
@@ -2315,23 +2763,7 @@ Always include: one to fill client details, one to audit compliance, one templat
                     <Sparkles className="w-3 h-3" />
                     <span>TipTap AI</span>
                   </button>
-                  <button
-                    onClick={() => {
-                      if (docEditorMode === 'code' && docRichEditorRef.current) {
-                        docRichEditorRef.current.innerHTML = formatDocToHtml(documentBody);
-                      }
-                      setDocEditorMode('lexical');
-                    }}
-                    className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded font-medium transition ${
-                      docEditorMode === 'lexical'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                    }`}
-                    title="Lexical Editor (Meta) — rich text with AI autocomplete"
-                  >
-                    <Wand2 className="w-3 h-3" />
-                    <span>Lexical</span>
-                  </button>
+
                   <button
                     onClick={() => {
                       if (docEditorMode === 'code' && docRichEditorRef.current) {
@@ -2393,6 +2825,155 @@ Always include: one to fill client details, one to audit compliance, one templat
                     A4 (8.27" × 11.69")
                   </button>
                 </div>
+                {/* Status Verified Badge (Samrat Legal style) */}
+                <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 dark:text-emerald-300 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 px-2.5 py-1 rounded-lg">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  <span>माहिती तपासली (Verified)</span>
+                </span>
+
+                {/* Document Font Size controls: A- / 14pt / A+ (Samrat Legal style) */}
+                <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg p-0.5" title="दस्तऐवज फॉन्ट आकार (Font Size)">
+                  <button
+                    type="button"
+                    onClick={() => setCourtDocFontSize((s) => Math.max(10, s - 1))}
+                    className="px-2 py-0.5 text-xs font-bold text-slate-700 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-700 rounded cursor-pointer"
+                    title="फॉन्ट आकार कमी करा (A-)"
+                  >
+                    A-
+                  </button>
+                  <span className="text-xs font-bold text-amber-700 dark:text-amber-400 px-1 font-mono">
+                    {courtDocFontSize}pt
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCourtDocFontSize((s) => Math.min(24, s + 1))}
+                    className="px-2 py-0.5 text-xs font-bold text-slate-700 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-700 rounded cursor-pointer"
+                    title="फॉन्ट आकार वाढवा (A+)"
+                  >
+                    A+
+                  </button>
+                </div>
+
+                {/* Fit to Mobile vs Original Size */}
+                <div className="hidden sm:flex items-center gap-1 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsFitToMobile(true)}
+                    className={`px-2 py-0.5 text-[11px] font-bold rounded flex items-center gap-1 transition-colors cursor-pointer ${
+                      isFitToMobile
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-700 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-700'
+                    }`}
+                    title="स्क्रीनच्या रुंदीनुसार कागद बसवा (Fit to Screen / Fit to Mobile)"
+                  >
+                    <Smartphone className="w-3 h-3" />
+                    <span>Fit to Mobile</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsFitToMobile(false);
+                      setZoomLevel(100);
+                    }}
+                    className={`px-2 py-0.5 text-[11px] font-bold rounded flex items-center gap-1 transition-colors cursor-pointer ${
+                      !isFitToMobile && zoomLevel === 100
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-700 hover:text-slate-900 hover:bg-slate-200 dark:text-slate-300 dark:hover:text-white dark:hover:bg-slate-700'
+                    }`}
+                    title="मूळ कागद आकार १००% (Original Size)"
+                  >
+                    <Maximize2 className="w-3 h-3" />
+                    <span>Original Size</span>
+                  </button>
+                </div>
+
+                {/* Zoom Controls */}
+                <div className="hidden md:flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsFitToMobile(false);
+                      setZoomLevel((z) => Math.max(50, z - 10));
+                    }}
+                    className="p-1 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded cursor-pointer"
+                    title="झूम कमी (Zoom Out)"
+                  >
+                    <ZoomOut className="w-3 h-3" />
+                  </button>
+                  <span className="text-[11px] font-mono font-bold text-slate-700 dark:text-slate-300 px-1">
+                    {zoomLevel}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsFitToMobile(false);
+                      setZoomLevel((z) => Math.min(180, z + 10));
+                    }}
+                    className="p-1 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded cursor-pointer"
+                    title="झूम वाढवा (Zoom In)"
+                  >
+                    <ZoomIn className="w-3 h-3" />
+                  </button>
+                </div>
+
+                {/* Scroll Top / Bottom */}
+                <div className="hidden lg:flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => documentCanvasContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+                    className="p-1 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded cursor-pointer"
+                    title="कागदाच्या सुरुवातीला / वर जा (Scroll to Top)"
+                  >
+                    <ArrowUp className="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => documentCanvasContainerRef.current?.scrollTo({ top: documentCanvasContainerRef.current.scrollHeight, behavior: 'smooth' })}
+                    className="p-1 text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded cursor-pointer"
+                    title="कागदाच्या शेवटी / खाली जा (Scroll to Bottom)"
+                  >
+                    <ArrowDown className="w-3 h-3" />
+                  </button>
+                </div>
+
+                {/* Color Mode / B&W */}
+                <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setIsColorMode(true)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                      isColorMode ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs' : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                    title="रंगीत मोड (Color Preview)"
+                  >
+                    <span>🎨 रंगीत</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsColorMode(false)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                      !isColorMode ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs' : 'text-slate-600 dark:text-slate-400'
+                    }`}
+                    title="कृष्णधवल कोर्ट मोड (Black & White Court Standard)"
+                  >
+                    <span>🖤 B&W</span>
+                  </button>
+                </div>
+
+                {/* Direct A4 Editing Toggle (✏️ थेट PDF/A4 संपादन) */}
+                <button
+                  type="button"
+                  onClick={() => setIsDirectA4Editing(!isDirectA4Editing)}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer ${
+                    isDirectA4Editing
+                      ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 border border-amber-500/60 ring-1 ring-amber-400/50'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-300 dark:border-slate-700'
+                  }`}
+                  title="कागदावरील कोणत्याही मजकुरावर थेट क्लिक करून टाईप करा (Direct A4 Click & Type Editor)"
+                >
+                  <Edit3 className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span>✏️ थेट PDF/A4 संपादन</span>
+                </button>
               </div>
 
               <div className="flex items-center gap-1.5 flex-wrap">
@@ -2678,9 +3259,21 @@ Always include: one to fill client details, one to audit compliance, one templat
             </div>
 
             {/* Document Content View */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-8 flex flex-col items-center bg-slate-200/80 dark:bg-slate-950/70">
-              <div className={`w-full max-w-3xl document-page paper-${paperSize} rounded-xl border border-slate-300/40 relative h-auto bg-white text-slate-900 font-marathi mb-16 shadow-2xl shrink-0`}>
-                
+            <div
+              ref={documentCanvasContainerRef}
+              className="flex-1 overflow-y-auto p-4 md:p-8 flex flex-col items-center bg-slate-200/80 dark:bg-slate-950/70"
+            >
+              <div
+                style={{
+                  transform: isFitToMobile ? 'scale(0.85)' : zoomLevel !== 100 ? `scale(${zoomLevel / 100})` : 'none',
+                  transformOrigin: 'top center',
+                  ['--court-doc-font-size' as any]: `${courtDocFontSize}pt`,
+                  fontSize: `${courtDocFontSize}pt`,
+                  filter: !isColorMode ? 'grayscale(100%)' : 'none',
+                  maxWidth: isFitToMobile ? '100%' : '850px'
+                }}
+                className={`w-full max-w-3xl document-page paper-${paperSize} rounded-xl border border-slate-300/40 relative h-auto bg-white text-slate-900 font-marathi mb-16 shadow-2xl shrink-0 transition-transform duration-150`}
+              >
                 {/* Dynamic Natural Page Break Indicators (simple dashed line) */}
                 {docEditorMode === 'visual' && naturalPageBreaks.map((nb, idx) => (
                   <div
@@ -2702,20 +3295,11 @@ Always include: one to fill client details, one to audit compliance, one templat
                       clientFacts: facts
                     }}
                   />
-                ) : docEditorMode === 'lexical' ? (
-                  <LexicalEditor
-                    documentBody={documentBody || ''}
-                    onChange={(html) => setDocumentBody(html)}
-                    apiKey={apiKey}
-                    contextParams={{
-                      templateTitle: activeTemplate?.title || documentTitle,
-                      clientFacts: facts
-                    }}
-                  />
+
                 ) : docEditorMode === 'visual' ? (
                   <div
                     ref={docRichEditorRef}
-                    contentEditable
+                    contentEditable={isDirectA4Editing}
                     suppressContentEditableWarning
                     onMouseUp={() => {
                       if (isFormatSticky && copiedFormat) {

@@ -290,21 +290,49 @@ app.post('/api/copilot/autocomplete', async (req, res) => {
   }
 });
 
-// Extract Client Details from Unstructured Notes
+// Extract Client Details from Unstructured Notes or Questionnaire Prompt
 app.post('/api/copilot/extract', async (req, res) => {
   try {
-    const { rawNotes, apiKey } = req.body;
+    const { rawNotes, apiKey, templateId, templateTitle, templateFields } = req.body;
     if (!rawNotes) {
       return res.status(400).json({ error: 'rawNotes is required' });
     }
 
-    const result = await copilotService.extractFactsFromNotes(rawNotes, apiKey);
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+    const result = await copilotService.extractFactsFromNotes(
+      rawNotes,
+      geminiKey,
+      templateId,
+      templateTitle,
+      templateFields
+    );
     res.json(result);
   } catch (err: any) {
     console.error('Copilot extract error:', err);
     res.status(500).json({ error: 'Failed to extract facts', details: err.message });
   }
 });
+
+// Generate Draft Document from Questionnaire / Event Prompt referencing active selected template
+app.post('/api/copilot/generate-from-prompt', async (req, res) => {
+  try {
+    const { promptText, templateId, apiKey, systemPromptOverride } = req.body;
+    if (!promptText) {
+      return res.status(400).json({ error: 'promptText is required' });
+    }
+    if (!templateId) {
+      return res.status(400).json({ error: 'templateId is required' });
+    }
+
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+    const result = await copilotService.generateDraftFromPrompt(promptText, templateId, geminiKey, systemPromptOverride);
+    res.json(result);
+  } catch (err: any) {
+    console.error('Generate from prompt error:', err);
+    res.status(500).json({ error: 'Failed to generate draft from prompt', details: err.message });
+  }
+});
+
 
 // Transliterate English text/numbers into Devanagari Marathi
 app.post('/api/copilot/transliterate', async (req, res) => {
