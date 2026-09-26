@@ -23,20 +23,40 @@ export class TemplateService {
     return templateStore.getAllTemplates();
   }
 
+  async getAllTemplatesAsync(): Promise<LegalTemplate[]> {
+    return templateStore.getAllTemplatesAsync();
+  }
+
   getTemplate(id: string): LegalTemplate | undefined {
     return templateStore.getTemplate(id);
+  }
+
+  async getTemplateAsync(id: string): Promise<LegalTemplate | undefined> {
+    return templateStore.getTemplateAsync(id);
   }
 
   saveTemplate(template: LegalTemplate): LegalTemplate {
     return templateStore.saveTemplate(template);
   }
 
+  async saveTemplateAsync(template: LegalTemplate): Promise<LegalTemplate> {
+    return templateStore.saveTemplateAsync(template);
+  }
+
   deleteTemplate(id: string): void {
     templateStore.deleteTemplate(id);
   }
 
+  async deleteTemplateAsync(id: string): Promise<void> {
+    return templateStore.deleteTemplateAsync(id);
+  }
+
   cloneTemplate(sourceId: string, newId: string, newTitle: string): LegalTemplate {
     return templateStore.cloneTemplate(sourceId, newId, newTitle);
+  }
+
+  async cloneTemplateAsync(sourceId: string, newId: string, newTitle: string): Promise<LegalTemplate> {
+    return templateStore.cloneTemplateAsync(sourceId, newId, newTitle);
   }
 
   mergeTemplate(template: LegalTemplate, facts: ClientFacts): string {

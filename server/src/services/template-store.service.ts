@@ -3,13 +3,32 @@ import path from 'path';
 import os from 'os';
 import { TEMPLATES } from '../templates/registry.js';
 import { LegalTemplate } from '../types/index.js';
+import {
+  isSupabaseConfigured,
+  fetchCustomTemplatesFromSupabase,
+  saveCustomTemplateToSupabase,
+  deleteCustomTemplateFromSupabase,
+  batchUpsertCustomTemplatesToSupabase,
+} from './supabase.service.js';
 
 class TemplateStore {
   private inMemoryCache: LegalTemplate[] | null = null;
+  private hasInitializedCloud: boolean = false;
+
+  constructor() {
+    // Eagerly populate cache in background on startup
+    this.loadCustomTemplatesAsync().catch((err) => {
+      console.warn('⚠️ [TemplateStore] Initial cloud load warning:', err.message);
+    });
+  }
 
   private getStoragePath(): string {
     if (process.env.VERCEL) {
       return path.join(os.tmpdir(), 'custom-templates.json');
+    }
+    const localData = path.join(process.cwd(), 'data', 'custom-templates.json');
+    if (fs.existsSync(path.dirname(localData))) {
+      return localData;
     }
     return path.join(__dirname, '../../data/custom-templates.json');
   }
@@ -21,7 +40,7 @@ class TemplateStore {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       if (!fs.existsSync(targetFile)) {
         // Try reading seed data from bundled data dir first if available
-        const seedFile = path.join(__dirname, '../../data/custom-templates.json');
+        const seedFile = path.join(process.cwd(), 'data', 'custom-templates.json');
         let initialData = '[]';
         if (fs.existsSync(seedFile)) {
           try { initialData = fs.readFileSync(seedFile, 'utf8'); } catch {}
@@ -29,12 +48,12 @@ class TemplateStore {
         fs.writeFileSync(targetFile, initialData, 'utf8');
       }
       return targetFile;
-    } catch (err: any) {
+    } catch {
       // Fallback to /tmp if primary path is read-only (EROFS)
       const tmpFile = path.join(os.tmpdir(), 'custom-templates.json');
       try {
         if (!fs.existsSync(tmpFile)) {
-          const seedFile = path.join(__dirname, '../../data/custom-templates.json');
+          const seedFile = path.join(process.cwd(), 'data', 'custom-templates.json');
           let initialData = '[]';
           if (fs.existsSync(seedFile)) {
             try { initialData = fs.readFileSync(seedFile, 'utf8'); } catch {}
@@ -48,7 +67,14 @@ class TemplateStore {
     }
   }
 
+  /**
+   * Synchronous load from memory or local disk file.
+   */
   loadCustomTemplates(): LegalTemplate[] {
+    if (this.inMemoryCache && this.inMemoryCache.length > 0) {
+      return this.inMemoryCache;
+    }
+
     const file = this.ensureDataFile();
     try {
       if (fs.existsSync(file)) {
@@ -58,9 +84,8 @@ class TemplateStore {
         return parsed;
       }
     } catch {
-      // If reading from storage fails, try seed file directly
       try {
-        const seedFile = path.join(__dirname, '../../data/custom-templates.json');
+        const seedFile = path.join(process.cwd(), 'data', 'custom-templates.json');
         if (fs.existsSync(seedFile)) {
           const raw = fs.readFileSync(seedFile, 'utf8');
           const parsed = JSON.parse(raw) as LegalTemplate[];
@@ -72,22 +97,57 @@ class TemplateStore {
     return this.inMemoryCache || [];
   }
 
-  saveCustomTemplates(templates: LegalTemplate[]): void {
-    this.inMemoryCache = templates;
+  /**
+   * Asynchronous load with Supabase cloud persistence and automatic local sync.
+   */
+  async loadCustomTemplatesAsync(): Promise<LegalTemplate[]> {
+    if (isSupabaseConfigured()) {
+      try {
+        const cloudTemplates = await fetchCustomTemplatesFromSupabase();
+        if (cloudTemplates !== null) {
+          if (cloudTemplates.length > 0) {
+            this.inMemoryCache = cloudTemplates;
+            this.hasInitializedCloud = true;
+            this.saveLocalCache(cloudTemplates);
+            return cloudTemplates;
+          } else if (!this.hasInitializedCloud) {
+            // First time running with Supabase: migrate existing local templates to Supabase
+            const local = this.loadCustomTemplates();
+            if (local.length > 0) {
+              console.log(`⚡ [Supabase] Empty cloud database detected. Migrating ${local.length} local templates to Supabase...`);
+              await batchUpsertCustomTemplatesToSupabase(local);
+              this.hasInitializedCloud = true;
+              return local;
+            }
+          }
+          this.inMemoryCache = cloudTemplates;
+          return cloudTemplates;
+        }
+      } catch (err: any) {
+        console.warn('⚠️ [TemplateStore] Supabase fetch failed, falling back to local storage:', err.message);
+      }
+    }
+
+    return this.loadCustomTemplates();
+  }
+
+  private saveLocalCache(templates: LegalTemplate[]): void {
     let targetFile = this.getStoragePath();
     try {
       const dir = path.dirname(targetFile);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(targetFile, JSON.stringify(templates, null, 2), 'utf8');
-    } catch (err: any) {
-      // If writing to primary storage fails due to EROFS/EACCES, write to /tmp
+    } catch {
       try {
         const tmpFile = path.join(os.tmpdir(), 'custom-templates.json');
         fs.writeFileSync(tmpFile, JSON.stringify(templates, null, 2), 'utf8');
-      } catch (tmpErr) {
-        console.warn('Persisting to disk failed in serverless environment; using in-memory state.', tmpErr);
-      }
+      } catch {}
     }
+  }
+
+  saveCustomTemplates(templates: LegalTemplate[]): void {
+    this.inMemoryCache = templates;
+    this.saveLocalCache(templates);
   }
 
   /** Returns built-in templates merged with custom (custom overrides built-in if same id) */
@@ -98,11 +158,23 @@ class TemplateStore {
     return [...builtIns, ...custom];
   }
 
+  async getAllTemplatesAsync(): Promise<LegalTemplate[]> {
+    const custom = await this.loadCustomTemplatesAsync();
+    const customIds = new Set(custom.map((t) => t.id));
+    const builtIns = TEMPLATES.filter((t) => !customIds.has(t.id));
+    return [...builtIns, ...custom];
+  }
+
   getTemplate(id: string): LegalTemplate | undefined {
     return this.getAllTemplates().find((t) => t.id === id);
   }
 
-  /** Upsert a custom template. Saves over any previous custom entry with same id. */
+  async getTemplateAsync(id: string): Promise<LegalTemplate | undefined> {
+    const all = await this.getAllTemplatesAsync();
+    return all.find((t) => t.id === id);
+  }
+
+  /** Upsert a custom template synchronously with background Supabase sync. */
   saveTemplate(template: LegalTemplate): LegalTemplate {
     const custom = this.loadCustomTemplates();
     const existingIdx = custom.findIndex((t) => t.id === template.id);
@@ -121,6 +193,22 @@ class TemplateStore {
       custom.push(updated);
     }
     this.saveCustomTemplates(custom);
+
+    if (isSupabaseConfigured()) {
+      saveCustomTemplateToSupabase(updated).catch((e) => {
+        console.warn('⚠️ [TemplateStore] Background Supabase save error:', e.message);
+      });
+    }
+
+    return updated;
+  }
+
+  /** Upsert a custom template asynchronously, awaiting Supabase write. */
+  async saveTemplateAsync(template: LegalTemplate): Promise<LegalTemplate> {
+    const updated = this.saveTemplate(template);
+    if (isSupabaseConfigured()) {
+      await saveCustomTemplateToSupabase(updated);
+    }
     return updated;
   }
 
@@ -135,6 +223,19 @@ class TemplateStore {
     if (idx === -1) throw new Error(`Template "${id}" not found in custom store.`);
     custom.splice(idx, 1);
     this.saveCustomTemplates(custom);
+
+    if (isSupabaseConfigured()) {
+      deleteCustomTemplateFromSupabase(id).catch((e) => {
+        console.warn('⚠️ [TemplateStore] Background Supabase delete error:', e.message);
+      });
+    }
+  }
+
+  async deleteTemplateAsync(id: string): Promise<void> {
+    this.deleteTemplate(id);
+    if (isSupabaseConfigured()) {
+      await deleteCustomTemplateFromSupabase(id);
+    }
   }
 
   /** Clone a template as a new custom template with a new id */
@@ -151,7 +252,20 @@ class TemplateStore {
     };
     return this.saveTemplate(cloned);
   }
+
+  async cloneTemplateAsync(sourceId: string, newId: string, newTitle: string): Promise<LegalTemplate> {
+    const source = await this.getTemplateAsync(sourceId);
+    if (!source) throw new Error(`Template "${sourceId}" not found.`);
+    const cloned: LegalTemplate = {
+      ...source,
+      id: newId,
+      title: newTitle,
+      isBuiltIn: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    return this.saveTemplateAsync(cloned);
+  }
 }
 
 export const templateStore = new TemplateStore();
-

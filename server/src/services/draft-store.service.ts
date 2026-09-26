@@ -2,9 +2,22 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { DocumentDraft } from '../types/index.js';
+import {
+  isSupabaseConfigured,
+  fetchCustomDraftsFromSupabase,
+  saveCustomDraftToSupabase,
+  deleteCustomDraftFromSupabase,
+} from './supabase.service.js';
 
 class DraftStore {
   private inMemoryCache: DocumentDraft[] | null = null;
+  private hasInitializedCloud: boolean = false;
+
+  constructor() {
+    this.getAllDraftsAsync().catch((err) => {
+      console.warn('⚠️ [DraftStore] Initial cloud load warning:', err.message);
+    });
+  }
 
   private getStoragePath(): string {
     if (process.env.VERCEL) {
@@ -36,6 +49,9 @@ class DraftStore {
   }
 
   public getAllDrafts(): DocumentDraft[] {
+    if (this.inMemoryCache && this.inMemoryCache.length > 0) {
+      return this.inMemoryCache;
+    }
     const file = this.ensureDataFile();
     try {
       if (fs.existsSync(file)) {
@@ -48,6 +64,53 @@ class DraftStore {
       console.error('Failed to load custom drafts:', err);
     }
     return this.inMemoryCache || [];
+  }
+
+  public async getAllDraftsAsync(): Promise<DocumentDraft[]> {
+    if (isSupabaseConfigured()) {
+      try {
+        const cloudDrafts = await fetchCustomDraftsFromSupabase();
+        if (cloudDrafts !== null) {
+          if (cloudDrafts.length > 0) {
+            this.inMemoryCache = cloudDrafts;
+            this.hasInitializedCloud = true;
+            this.saveLocalCache(cloudDrafts);
+            return cloudDrafts;
+          } else if (!this.hasInitializedCloud) {
+            // If cloud is empty, seed from local if available
+            const local = this.getAllDrafts();
+            if (local.length > 0) {
+              for (const draft of local) {
+                await saveCustomDraftToSupabase(draft).catch(() => {});
+              }
+              this.hasInitializedCloud = true;
+              return local;
+            }
+          }
+          this.inMemoryCache = cloudDrafts;
+          return cloudDrafts;
+        }
+      } catch (err: any) {
+        console.warn('⚠️ [DraftStore] Supabase fetch drafts error, using local:', err.message);
+      }
+    }
+    return this.getAllDrafts();
+  }
+
+  private saveLocalCache(drafts: DocumentDraft[]): void {
+    const targetFile = this.getStoragePath();
+    try {
+      const dir = path.dirname(targetFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(targetFile, JSON.stringify(drafts, null, 2), 'utf8');
+    } catch {
+      try {
+        const tmpFile = path.join(os.tmpdir(), 'custom-drafts.json');
+        fs.writeFileSync(tmpFile, JSON.stringify(drafts, null, 2), 'utf8');
+      } catch (tmpErr) {
+        console.warn('Persisting drafts to disk failed; using memory.', tmpErr);
+      }
+    }
   }
 
   public saveDraft(draft: DocumentDraft): DocumentDraft {
@@ -68,20 +131,22 @@ class DraftStore {
     }
 
     this.inMemoryCache = drafts;
-    const targetFile = this.getStoragePath();
-    try {
-      const dir = path.dirname(targetFile);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(targetFile, JSON.stringify(drafts, null, 2), 'utf8');
-    } catch (err) {
-      try {
-        const tmpFile = path.join(os.tmpdir(), 'custom-drafts.json');
-        fs.writeFileSync(tmpFile, JSON.stringify(drafts, null, 2), 'utf8');
-      } catch (tmpErr) {
-        console.warn('Persisting drafts to disk failed in serverless; using memory.', tmpErr);
-      }
+    this.saveLocalCache(drafts);
+
+    if (isSupabaseConfigured()) {
+      saveCustomDraftToSupabase(updated).catch((e) => {
+        console.warn('⚠️ [DraftStore] Background Supabase draft save error:', e.message);
+      });
     }
 
+    return updated;
+  }
+
+  public async saveDraftAsync(draft: DocumentDraft): Promise<DocumentDraft> {
+    const updated = this.saveDraft(draft);
+    if (isSupabaseConfigured()) {
+      await saveCustomDraftToSupabase(updated);
+    }
     return updated;
   }
 
@@ -91,10 +156,20 @@ class DraftStore {
     if (idx !== -1) {
       drafts.splice(idx, 1);
       this.inMemoryCache = drafts;
-      const targetFile = this.getStoragePath();
-      try {
-        fs.writeFileSync(targetFile, JSON.stringify(drafts, null, 2), 'utf8');
-      } catch {}
+      this.saveLocalCache(drafts);
+
+      if (isSupabaseConfigured()) {
+        deleteCustomDraftFromSupabase(id).catch((e) => {
+          console.warn('⚠️ [DraftStore] Background Supabase draft delete error:', e.message);
+        });
+      }
+    }
+  }
+
+  public async deleteDraftAsync(id: string): Promise<void> {
+    this.deleteDraft(id);
+    if (isSupabaseConfigured()) {
+      await deleteCustomDraftFromSupabase(id);
     }
   }
 }

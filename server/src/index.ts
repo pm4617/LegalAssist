@@ -38,32 +38,40 @@ app.get('/api/health', (req, res) => {
 });
 
 // Templates Routes
-app.get('/api/templates', (req, res) => {
-  const templates = templateService.getAllTemplates();
-  res.json(templates);
+app.get('/api/templates', async (req, res) => {
+  try {
+    const templates = await templateService.getAllTemplatesAsync();
+    res.json(templates);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/templates/:id', (req, res) => {
-  const template = templateService.getTemplate(req.params.id);
-  if (!template) {
-    return res.status(404).json({ error: 'Template not found' });
+app.get('/api/templates/:id', async (req, res) => {
+  try {
+    const template = await templateService.getTemplateAsync(req.params.id);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    res.json(template);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-  res.json(template);
 });
 
 // Create a new custom template
-app.post('/api/templates', (req, res) => {
+app.post('/api/templates', async (req, res) => {
   try {
     const template = req.body as any;
     if (!template.id || !template.title || !template.templateText) {
       return res.status(400).json({ error: 'id, title, and templateText are required' });
     }
     // Prevent overwriting built-in templates via POST
-    const existing = templateService.getTemplate(template.id);
+    const existing = await templateService.getTemplateAsync(template.id);
     if (existing?.isBuiltIn) {
       return res.status(409).json({ error: `Template id "${template.id}" is a built-in template. Use POST /api/templates/${template.id}/clone to create a copy.` });
     }
-    const saved = templateService.saveTemplate({
+    const saved = await templateService.saveTemplateAsync({
       standardClauses: [],
       fields: [],
       statutoryRequirements: [],
@@ -79,14 +87,14 @@ app.post('/api/templates', (req, res) => {
 });
 
 // Update (replace) a custom template
-app.put('/api/templates/:id', (req, res) => {
+app.put('/api/templates/:id', async (req, res) => {
   try {
-    const existing = templateService.getTemplate(req.params.id);
+    const existing = await templateService.getTemplateAsync(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Template not found' });
     if (existing.isBuiltIn) {
       return res.status(403).json({ error: 'Cannot directly edit a built-in template. Clone it first.' });
     }
-    const updated = templateService.saveTemplate({ ...req.body, id: req.params.id });
+    const updated = await templateService.saveTemplateAsync({ ...req.body, id: req.params.id });
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -94,9 +102,9 @@ app.put('/api/templates/:id', (req, res) => {
 });
 
 // Delete a custom template
-app.delete('/api/templates/:id', (req, res) => {
+app.delete('/api/templates/:id', async (req, res) => {
   try {
-    templateService.deleteTemplate(req.params.id);
+    await templateService.deleteTemplateAsync(req.params.id);
     res.json({ success: true });
   } catch (err: any) {
     const isBuiltIn = err.message.includes('built-in');
@@ -105,11 +113,11 @@ app.delete('/api/templates/:id', (req, res) => {
 });
 
 // Clone a template (built-in or custom) into a new custom template
-app.post('/api/templates/:id/clone', (req, res) => {
+app.post('/api/templates/:id/clone', async (req, res) => {
   try {
     const { newId, newTitle } = req.body;
     if (!newId || !newTitle) return res.status(400).json({ error: 'newId and newTitle are required' });
-    const cloned = templateService.cloneTemplate(req.params.id, newId, newTitle);
+    const cloned = await templateService.cloneTemplateAsync(req.params.id, newId, newTitle);
     res.status(201).json(cloned);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -174,31 +182,31 @@ app.post('/api/documents/export/docx', async (req, res) => {
 });
 
 // Document Drafts API Routes
-app.get('/api/drafts', (req, res) => {
+app.get('/api/drafts', async (req, res) => {
   try {
-    const drafts = draftStore.getAllDrafts();
+    const drafts = await draftStore.getAllDraftsAsync();
     res.json(drafts);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/drafts', (req, res) => {
+app.post('/api/drafts', async (req, res) => {
   try {
     const draft = req.body;
     if (!draft.id || !draft.templateId) {
       return res.status(400).json({ error: 'id and templateId are required' });
     }
-    const saved = draftStore.saveDraft(draft);
+    const saved = await draftStore.saveDraftAsync(draft);
     res.status(201).json(saved);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/drafts/:id', (req, res) => {
+app.delete('/api/drafts/:id', async (req, res) => {
   try {
-    draftStore.deleteDraft(req.params.id);
+    await draftStore.deleteDraftAsync(req.params.id);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
