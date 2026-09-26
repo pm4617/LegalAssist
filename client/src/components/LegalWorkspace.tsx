@@ -70,6 +70,7 @@ import {
   getMarathiTodayDate,
   removePlaceholdersWithSpaces,
   removeEmptyTableRows,
+  removeUnenteredChoiceLines,
   cleanUnprovidedPartyBlocks
 } from '../utils/date';
 import { parseKeyValueNotes } from '../utils/keyValueParser';
@@ -393,6 +394,8 @@ Extraction Rules:
       result = removeEmptyTableRows(result);
       // 3. Final cleanup pass for party blocks
       result = cleanUnprovidedPartyBlocks(result, factsMap);
+      // 4. Remove unentered choice lines, orphan brackets, and blank checklist points (e.g. "[ i ]", "[ iii ]", "[ v ] इतर कारण :")
+      result = removeUnenteredChoiceLines(result);
     }
 
     return result;
@@ -1079,6 +1082,8 @@ Extraction Rules:
           cleanHtml = removeEmptyTableRows(cleanHtml);
           // 3. Final party blocks cleanup
           cleanHtml = cleanUnprovidedPartyBlocks(cleanHtml, effectiveFacts);
+          // 4. Clean orphan checklist lines / unentered options
+          cleanHtml = removeUnenteredChoiceLines(cleanHtml);
 
           setDocumentBody(cleanHtml);
           if (docRichEditorRef.current) {
@@ -1105,6 +1110,8 @@ Extraction Rules:
       // 2. If entire table row is having empty / space value -- that row shall get removed
       mergedHtml = removeEmptyTableRows(mergedHtml);
       mergedHtml = cleanUnprovidedPartyBlocks(mergedHtml, mergedFacts);
+      // 3. Clean orphan checklist lines / unentered options
+      mergedHtml = removeUnenteredChoiceLines(mergedHtml);
 
       setDocumentBody(mergedHtml);
       if (docRichEditorRef.current) {

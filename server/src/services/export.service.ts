@@ -1,7 +1,17 @@
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { execFile } from 'child_process';
 import {
   Document, Paragraph, TextRun, AlignmentType, LineRuleType, Packer, PageBreak,
   Table, TableRow, TableCell, BorderStyle, WidthType, VerticalAlign,
 } from 'docx';
+
+export interface PdfExportOptions {
+  title: string;
+  content: string;
+  paperSize?: 'a4' | 'legal';
+}
 
 export interface DocxExportOptions {
   title: string;
@@ -663,6 +673,142 @@ export class ExportService {
     });
 
     return await Packer.toBuffer(doc);
+  }
+
+  /**
+   * Generates a court-standard PDF buffer using the local headless browser engine (Edge/Chrome/Chromium)
+   * with full Devanagari ligatures and court margins.
+   */
+  async generatePdf(options: PdfExportOptions): Promise<Buffer> {
+    const browserPath = this.findBrowserPath();
+    if (!browserPath) {
+      throw new Error('No compatible browser (Edge/Chrome/Chromium) found for PDF export.');
+    }
+
+    const pageSize = options.paperSize === 'a4' ? 'A4 portrait' : 'legal portrait';
+    const tempDir = os.tmpdir();
+    const tempHtmlPath = path.join(tempDir, `court_doc_${Date.now()}_${Math.random().toString(36).substring(7)}.html`);
+    const tempPdfPath = path.join(tempDir, `court_doc_${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
+
+    const fullHtml = `<!DOCTYPE html>
+<html lang="mr">
+<head>
+  <meta charset="UTF-8">
+  <title>${options.title || 'Legal Document'}</title>
+  <style>
+    @page {
+      size: ${pageSize};
+      margin: 1.2in 1.0in 1.0in 1.5in; /* Standard Court Margin with Left Binding Space */
+    }
+    body {
+      font-family: 'Times New Roman', 'Mangal', 'Nirmala UI', 'Arial Unicode MS', serif;
+      font-size: 13pt;
+      line-height: 1.75;
+      color: #000;
+      margin: 0;
+      padding: 0;
+      text-align: justify;
+    }
+    p {
+      margin: 0 0 8pt 0;
+      text-indent: 30pt;
+    }
+    .no-indent, .text-center, .text-right {
+      text-indent: 0 !important;
+    }
+    .text-center, center {
+      text-align: center !important;
+    }
+    .text-right {
+      text-align: right !important;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12pt 0;
+    }
+    th, td {
+      border: 1px solid #333;
+      padding: 6pt 8pt;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background-color: #f2f2f2;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  ${options.content || ''}
+</body>
+</html>`;
+
+    fs.writeFileSync(tempHtmlPath, fullHtml, 'utf8');
+
+    return new Promise<Buffer>((resolve, reject) => {
+      const args = [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--no-pdf-header-footer',
+        `--print-to-pdf=${tempPdfPath}`,
+        tempHtmlPath
+      ];
+
+      execFile(browserPath, args, { timeout: 30000 }, (err) => {
+        try { fs.unlinkSync(tempHtmlPath); } catch {}
+        if (err) {
+          try { fs.unlinkSync(tempPdfPath); } catch {}
+          return reject(err);
+        }
+        try {
+          if (!fs.existsSync(tempPdfPath)) {
+            return reject(new Error('PDF output file was not generated'));
+          }
+          const pdfBuffer = fs.readFileSync(tempPdfPath);
+          try { fs.unlinkSync(tempPdfPath); } catch {}
+          resolve(pdfBuffer);
+        } catch (readErr) {
+          reject(readErr);
+        }
+      });
+    });
+  }
+
+  private findBrowserPath(): string | null {
+    const winCandidates = [
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      ...(process.env.LOCALAPPDATA ? [
+        path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      ] : [])
+    ];
+
+    const linuxCandidates = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/snap/bin/chromium'
+    ];
+
+    const macCandidates = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+    ];
+
+    const all = [...winCandidates, ...linuxCandidates, ...macCandidates];
+    for (const candidate of all) {
+      if (candidate && fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
   }
 }
 

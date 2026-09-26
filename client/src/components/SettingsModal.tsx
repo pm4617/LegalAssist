@@ -227,7 +227,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
             <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-              Allows legal clients to select templates, answer form wizard questions step-by-step on Telegram, and receive completed court-formatted <code className="text-sky-600 dark:text-sky-400 font-mono">.docx</code> documents directly in Telegram chat!
+              Allows advocates & clients to select templates, choose either step-by-step <b>Questionnaire</b> or <b>Direct Narration</b> (Voice/Text), and receive completed court-formatted <code className="text-sky-600 dark:text-sky-400 font-mono">.docx</code> and <code className="text-rose-600 dark:text-rose-400 font-mono">.pdf</code> documents directly in Telegram chat!
             </p>
           </div>
         </div>

@@ -172,6 +172,141 @@ export function removeEmptyTableRows(html: string): string {
   });
 }
 
+const ROMAN_LOWER_LIST = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x', 'xi', 'xii'];
+const ROMAN_UPPER_LIST = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+const DEVANAGARI_DIGITS_LIST = ['१', '२', '३', '४', '५', '६', '७', '८', '९', '१०'];
+
+function formatChoiceIndex(index: number, type: string): string {
+  const i = index - 1;
+  switch (type) {
+    case 'roman_lower': return ROMAN_LOWER_LIST[i] || String(index);
+    case 'roman_upper': return ROMAN_UPPER_LIST[i] || String(index);
+    case 'letter_lower': return String.fromCharCode(97 + i);
+    case 'letter_upper': return String.fromCharCode(65 + i);
+    case 'devanagari': return DEVANAGARI_DIGITS_LIST[i] || String(index);
+    default: return String(index);
+  }
+}
+
+function detectBulletType(raw: string): string | null {
+  const s = raw.trim();
+  if (/^[ivxlcdm]+$/i.test(s)) {
+    return s === s.toLowerCase() ? 'roman_lower' : 'roman_upper';
+  }
+  if (/^[a-z]$/i.test(s)) {
+    return s === s.toLowerCase() ? 'letter_lower' : 'letter_upper';
+  }
+  if (/^[\u0966-\u096F]+$/.test(s)) {
+    return 'devanagari';
+  }
+  if (/^\d+$/.test(s)) {
+    return 'number';
+  }
+  return null;
+}
+
+/**
+ * Re-indexes remaining list items sequentially (e.g. if [ ii ] is the only remaining item, it becomes [ i ])
+ */
+export function renumberChoiceLines(html: string): string {
+  if (!html) return '';
+
+  const blockRe = /<(div|p|li)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+
+  let currentListType: string | null = null;
+  let currentListBracket: string | null = null;
+  let currentIndex = 0;
+  let lastBlockEndPos = 0;
+
+  return html.replace(blockRe, (fullBlock, tag, attrs, inner, offset) => {
+    // If the gap between blocks has long text (>400 chars) or major breaks, reset sequence
+    if (offset - lastBlockEndPos > 500) {
+      currentListType = null;
+      currentListBracket = null;
+      currentIndex = 0;
+    }
+    lastBlockEndPos = offset + fullBlock.length;
+
+    // Matches leading bracket/bullet: e.g. [ ii ], [  ii  ], (ii), [ 2 ], etc.
+    const markerMatch = inner.match(/^((?:<[^>]*>|&nbsp;|\s)*)(\[|\(|\b)\s*([ivxlcdm]+|[a-z]|\d+|[\u0966-\u096F]+)\s*(\]|\)|\.)((?:<[^>]*>|\s)*)/i);
+
+    if (!markerMatch) {
+      const plain = inner.replace(/<[^>]*>/g, '').trim();
+      if (plain.length > 80) {
+        currentListType = null;
+        currentListBracket = null;
+        currentIndex = 0;
+      }
+      return fullBlock;
+    }
+
+    const [allMatched, leadingGarbage, openB, rawVal, closeB, trailingSpace] = markerMatch;
+    const bulletType = detectBulletType(rawVal);
+
+    if (!bulletType) {
+      return fullBlock;
+    }
+
+    // Ignore page breaks or long citation brackets like [page-break]
+    if (openB === '[' && (rawVal.toLowerCase() === 'page' || rawVal.length > 5)) {
+      return fullBlock;
+    }
+
+    const bracketStyle = openB;
+
+    if (currentListType === bulletType && currentListBracket === bracketStyle) {
+      currentIndex++;
+    } else {
+      currentListType = bulletType;
+      currentListBracket = bracketStyle;
+      currentIndex = 1;
+    }
+
+    const newFormattedVal = formatChoiceIndex(currentIndex, bulletType);
+    const replacedMarker = leadingGarbage + openB + ' ' + newFormattedVal + ' ' + closeB + trailingSpace;
+
+    const newInner = inner.replace(markerMatch[0], replacedMarker);
+    return '<' + tag + attrs + '>' + newInner + '</' + tag + '>';
+  });
+}
+
+/**
+ * Removes orphan checklist bullets, brackets, or unentered choice options (e.g. "[ i ]", "[ iii ]",
+ * "[ v ] इतर कारण :") where the placeholder was not provided or was replaced with spaces,
+ * and sequentially re-indexes remaining items (e.g. [ ii ] becomes [ i ]).
+ */
+export function removeUnenteredChoiceLines(html: string): string {
+  if (!html) return '';
+  // 1. Strip empty option lines
+  const cleaned = html.replace(/<(div|p|li)[^>]*>([\s\S]*?)<\/\1>/gi, (fullTag, tag, inner) => {
+    const plainText = inner
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&#160;/gi, ' ')
+      .replace(/&zwnj;|&zwj;/gi, '')
+      .trim();
+
+    if (!plainText) return '';
+
+    // 1. Standalone brackets/bullets like "[ i ]", "[ ii ]", "(a)", "1.", "(1)", "[ 1 ]", etc.
+    const isAloneBullet =
+      /^\[\s*(?:[ivxlcdm]+|\d+|[a-z]|[\u0966-\u096F]+)\s*\]\s*$/i.test(plainText) ||
+      /^\(?\s*(?:[ivxlcdm]+|\d+|[a-z]|[\u0966-\u096F]+)\s*[\)\.\-:]\s*$/i.test(plainText);
+    if (isAloneBullet) return '';
+
+    // 2. Bracket + trailing label without user data: "[ v ] इतर कारण :", "इतर कारण :", "[ v ] इतर :", "Other reason :"
+    const isDanglingLabel =
+      /^\[\s*(?:[ivxlcdm]+|\d+|[a-z]|[\u0966-\u096F]+)\s*\]\s*(?:इतर\s*(?:कारण|तपशील|शेरा|माहिती)|other\s*(?:reason|details)|any\s*other)?\s*[:\-\.]?\s*$/i.test(plainText) ||
+      /^(?:इतर\s*(?:कारण|तपशील|शेरा|माहिती)|other\s*(?:reason|details)|any\s*other)\s*[:\-\.]?\s*$/i.test(plainText);
+    if (isDanglingLabel) return '';
+
+    return fullTag;
+  });
+
+  // 2. Sequentially renumber remaining list items (e.g. [ ii ] -> [ i ])
+  return renumberChoiceLines(cleaned);
+}
+
 const DEVANAGARI_DIGITS = ['०', '१', '२', '३', '४', '५', '६', '७', '८', '९'];
 
 export function toDevanagariDigits(num: number): string {

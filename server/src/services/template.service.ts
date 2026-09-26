@@ -1,6 +1,6 @@
 import { templateStore } from './template-store.service.js';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult } from '../types/index.js';
-import { getMarathiTodayDate, removePlaceholdersWithSpaces, removeEmptyTableRows, cleanUnprovidedPartyBlocks, isValidPartyValue } from '../utils/date.utils.js';
+import { getMarathiTodayDate, removePlaceholdersWithSpaces, removeEmptyTableRows, cleanUnprovidedPartyBlocks, removeUnenteredChoiceLines, isValidPartyValue } from '../utils/date.utils.js';
 
 function formatToDDMMYYYY(val: string | undefined): string {
   if (!val || !val.trim()) return '';
@@ -240,6 +240,9 @@ export class TemplateService {
 
     // 3. Final cleanup of any unprovided party residual shells or dead dot signature lines
     text = cleanUnprovidedPartyBlocks(text, cleanFacts);
+
+    // 4. Remove unentered choice lines, orphan brackets, and blank checklist points (e.g. "[ i ]", "[ iii ]", "[ v ] इतर कारण :")
+    text = removeUnenteredChoiceLines(text);
 
     return text;
   }

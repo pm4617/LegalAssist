@@ -206,12 +206,15 @@ class TemplateStore {
         mimeType,
         uploadedAt: now,
       };
-    } else if (!template.referencePdf) {
-      // PDF was removed while editing
+    } else if (template.referencePdf === null || (template as any).removeReferencePdf === true) {
+      // PDF was explicitly removed by the user
       if (existingIdx >= 0 && custom[existingIdx].referencePdf) {
         deleteTemplatePdf(template.id).catch(() => {});
       }
       cleanRefPdf = undefined;
+    } else if (template.referencePdf === undefined && existingIdx >= 0 && custom[existingIdx].referencePdf) {
+      // Preserve existing reference PDF metadata if omitted during partial updates (e.g. rename)
+      cleanRefPdf = custom[existingIdx].referencePdf;
     }
 
     const updated: LegalTemplate = {
@@ -261,11 +264,15 @@ class TemplateStore {
         mimeType,
         uploadedAt: now,
       };
-    } else if (!template.referencePdf) {
+    } else if (template.referencePdf === null || (template as any).removeReferencePdf === true) {
+      // PDF was explicitly removed by the user
       if (existingIdx >= 0 && custom[existingIdx].referencePdf) {
         await deleteTemplatePdf(template.id);
       }
       cleanRefPdf = undefined;
+    } else if (template.referencePdf === undefined && existingIdx >= 0 && custom[existingIdx].referencePdf) {
+      // Preserve existing reference PDF metadata if omitted during partial updates (e.g. rename)
+      cleanRefPdf = custom[existingIdx].referencePdf;
     }
 
     const updated: LegalTemplate = {

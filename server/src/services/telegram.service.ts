@@ -4,11 +4,13 @@ import os from 'os';
 import { templateService } from './template.service.js';
 import { exportService } from './export.service.js';
 import { draftStore } from './draft-store.service.js';
+import { copilotService } from './copilot.service.js';
+import { getMarathiTodayDate } from '../utils/date.utils.js';
 import { ClientFacts, LegalTemplate, FieldDefinition } from '../types/index.js';
 
 interface TelegramSession {
   chatId: number;
-  state: 'IDLE' | 'SELECTING_TEMPLATE' | 'IN_WIZARD';
+  state: 'IDLE' | 'SELECTING_TEMPLATE' | 'SELECTING_MODE' | 'IN_WIZARD' | 'AWAITING_NARRATION' | 'GENERATING';
   templateId?: string;
   currentFieldIndex: number;
   facts: ClientFacts;
@@ -195,34 +197,58 @@ export class TelegramBotService {
       const chatId = message.chat?.id;
       const text = (message.text || '').trim();
 
-      if (!chatId) return;
+      const trimmed = text.trim();
+      const lower = trimmed.toLowerCase();
 
-      const lower = text.toLowerCase();
-      if (text === '/start' || text === '/new' || text === '/restart' || lower.includes('hello') || lower.includes('hi')) {
-        await this.handleStart(chatId);
-        return;
-      }
-
-      if (text === '/cancel' || lower === 'cancel') {
+      // Check for global cancel or help commands
+      if (trimmed === '/cancel' || lower === 'cancel') {
         this.sessions.delete(chatId);
-        await this.sendMessage(chatId, '❌ <b>Session cancelled.</b> Type /start to begin a new legal document draft.');
+        await this.sendMessage(chatId, '❌ <b>सत्र रद्द करण्यात आले आहे (Session cancelled).</b> नवीन मसुदा तयार करण्यासाठी /start दाबा.');
         return;
       }
 
-      if (text === '/help') {
-        await this.sendMessage(chatId, `🏛️ <b>LegalAssist Telegram Bot Help</b>\n\n• /start or /new - Select a legal template & start form wizard\n• /skip - Skip optional question\n• /cancel - Cancel current session\n• /help - View commands help`);
+      if (trimmed === '/help') {
+        await this.sendMessage(chatId, `🏛️ <b>LegalAssist Telegram Bot Help</b>\n\n• /start or /new - मसुदा निवडा (Select template & choose format)\n• /skip - Skip optional question in questionnaire\n• /cancel - Cancel current session\n• /help - View commands help\n\n💡 <i>तुम्ही केसची माहिती थेट कथन (Narration) स्वरूपात पाठवून त्वरित .docx आणि .pdf मिळवू शकता!</i>`);
         return;
       }
 
-      // Check current session
       const session = this.sessions.get(chatId);
-      if (!session || session.state === 'IDLE') {
+
+      // Start/Greeting check: only trigger if explicitly typed or when not actively in narration
+      const isStartCmd = trimmed === '/start' || trimmed === '/new' || trimmed === '/restart';
+      const isGreeting = /^(?:hello|hi|hey|namaste|नमस्कार|प्रणाम)$/i.test(lower);
+
+      if (isStartCmd || (!session && isGreeting)) {
         await this.handleStart(chatId);
+        return;
+      }
+
+      if (!session || session.state === 'IDLE' || session.state === 'SELECTING_TEMPLATE') {
+        await this.handleStart(chatId);
+        return;
+      }
+
+      if (session.state === 'SELECTING_MODE') {
+        if (session.templateId) {
+          await this.handleTemplateSelected(chatId, session.templateId);
+        } else {
+          await this.handleStart(chatId);
+        }
+        return;
+      }
+
+      if (session.state === 'AWAITING_NARRATION') {
+        await this.processNarrationInput(chatId, session, text);
+        return;
+      }
+
+      if (session.state === 'GENERATING') {
+        await this.sendMessage(chatId, '⏳ <i>कृपया थोडा वेळ थांबा, AI Legal Copilot मसुदा तयार करत आहे...</i>');
         return;
       }
 
       if (session.state === 'IN_WIZARD') {
-        if (text === '/skip' || lower === 'skip') {
+        if (trimmed === '/skip' || lower === 'skip') {
           await this.processAnswer(chatId, session, '');
         } else {
           await this.processAnswer(chatId, session, text);
@@ -244,7 +270,13 @@ export class TelegramBotService {
 
       if (data.startsWith('tmpl_')) {
         const templateId = data.replace('tmpl_', '');
+        await this.handleTemplateSelected(chatId, templateId);
+      } else if (data.startsWith('mode_wizard_')) {
+        const templateId = data.replace('mode_wizard_', '');
         await this.startWizardForTemplate(chatId, templateId);
+      } else if (data.startsWith('mode_narration_')) {
+        const templateId = data.replace('mode_narration_', '');
+        await this.startNarrationMode(chatId, templateId);
       } else if (data.startsWith('ans_')) {
         let value = data.replace('ans_', '');
         const session = this.sessions.get(chatId);
@@ -274,7 +306,7 @@ export class TelegramBotService {
         }
       } else if (data === 'cmd_cancel') {
         this.sessions.delete(chatId);
-        await this.sendMessage(chatId, '❌ <b>Draft session cancelled.</b> Type /start anytime to begin again.');
+        await this.sendMessage(chatId, '❌ <b>सत्र रद्द करण्यात आले आहे.</b> Type /start anytime to begin again.');
       } else if (data.startsWith('pg_')) {
         // Pagination: pg_N (where N is zero-based page index)
         const page = parseInt(data.replace('pg_', ''), 10);
@@ -431,7 +463,7 @@ export class TelegramBotService {
 
     const fields = this.getEffectiveFields(template);
     if (session.currentFieldIndex >= fields.length) {
-      await this.finishWizardAndSendDocx(chatId, session);
+      await this.finishWizardAndSendFiles(chatId, session);
       return;
     }
 
@@ -512,9 +544,121 @@ export class TelegramBotService {
     session.updatedAt = Date.now();
 
     if (session.currentFieldIndex >= fields.length) {
-      await this.finishWizardAndSendDocx(chatId, session);
+      await this.finishWizardAndSendFiles(chatId, session);
     } else {
       await this.sendCurrentQuestion(chatId, session);
+    }
+  }
+
+  private async handleTemplateSelected(chatId: number, templateId: string) {
+    const template = templateService.getTemplate(templateId);
+    if (!template) {
+      await this.sendMessage(chatId, '❌ निवडलेला मसुदा सापडला नाही. Type /start to select again.');
+      return;
+    }
+
+    const session: TelegramSession = {
+      chatId,
+      state: 'SELECTING_MODE',
+      templateId,
+      currentFieldIndex: 0,
+      facts: {},
+      updatedAt: Date.now()
+    };
+    this.sessions.set(chatId, session);
+
+    const safeTitle = escapeHtml(template.title);
+    const safeTitleMr = template.titleMr ? `\n<i>(${escapeHtml(template.titleMr)})</i>` : '';
+
+    const text = `📜 <b>निवडलेला मसुदा / Selected Template:</b>\n<b>${safeTitle}</b>${safeTitleMr}\n\n` +
+      `<b>तुम्हाला माहिती कशी भरायची आहे? खालील पर्याय निवडा:</b>\n` +
+      `<i>(Choose how you want to input case particulars):</i>`;
+
+    const inlineKeyboard = [
+      [
+        { text: '📝 प्रश्नावली स्वरूप (Questionnaire / Step-by-Step)', callback_data: `mode_wizard_${templateId}` }
+      ],
+      [
+        { text: '✍️ कथन / तपशील टाका (Direct Narration / Case Details)', callback_data: `mode_narration_${templateId}` }
+      ],
+      [
+        { text: '◀️ मसुदे यादी (Back to Templates)', callback_data: 'pg_0' },
+        { text: '❌ रद्द करा (Cancel)', callback_data: 'cmd_cancel' }
+      ]
+    ];
+
+    await this.sendMessageWithKeyboard(chatId, text, { inline_keyboard: inlineKeyboard });
+  }
+
+  private async startNarrationMode(chatId: number, templateId: string) {
+    const template = templateService.getTemplate(templateId);
+    if (!template) {
+      await this.sendMessage(chatId, '❌ Template not found. Type /start to select again.');
+      return;
+    }
+
+    const session: TelegramSession = {
+      chatId,
+      state: 'AWAITING_NARRATION',
+      templateId,
+      currentFieldIndex: 0,
+      facts: {},
+      updatedAt: Date.now()
+    };
+    this.sessions.set(chatId, session);
+
+    const safeTitle = escapeHtml(template.title);
+    const safeTitleMr = template.titleMr ? ` (${escapeHtml(template.titleMr)})` : '';
+
+    const msg = `✍️ <b>कथन / केसचे तपशील येथे पाठवा (Direct Narration):</b>\n\n` +
+      `<b>मसुदा:</b> <b>${safeTitle}</b>${safeTitleMr}\n\n` +
+      `तुम्ही केसची संपूर्ण माहिती खाली एकाच मेसेजमध्ये <b>टाईप करून</b>, <b>पेस्ट करून</b> किंवा <b>व्हॉईस टायपिंगने (माईकवर बोलून)</b> पाठवू शकता.\n\n` +
+      `💡 <b>काय काय नमूद करू शकता (Examples):</b>\n` +
+      `• कोर्टाचे नाव व शहर (उदा. मे. जेएमएफसी सो. अमळनेर)\n` +
+      `• पक्षकारांची नावे, पत्ते, वय, धंदा\n` +
+      `• गुन्हा / FIR नंबर, पोलीस स्टेशन, तारखा\n` +
+      `• जप्त मालमत्ता / वाहनाचा तपशील (गाडी नंबर, चेसिस नंबर, इ.)\n` +
+      `• मुख्य घटनाक्रम व तुमच्या मागण्या (Prayer)\n\n` +
+      `🤖 <i>AI Legal Copilot तुमच्या कथनाचे विश्लेषण करून थेट <b>.docx</b> आणि <b>.pdf</b> मसुदा तयार करून पाठवेल!</i>\n\n` +
+      `<i>(रद्द करण्यासाठी /cancel किंवा मसुदा बदलण्यासाठी /start दाबा)</i>`;
+
+    await this.sendMessage(chatId, msg);
+  }
+
+  private async processNarrationInput(chatId: number, session: TelegramSession, narrationText: string) {
+    if (!session.templateId) return;
+    const template = templateService.getTemplate(session.templateId);
+    if (!template) {
+      await this.sendMessage(chatId, '❌ निवडलेला मसुदा सापडला नाही. Type /start to begin again.');
+      this.sessions.delete(chatId);
+      return;
+    }
+
+    if (!narrationText || narrationText.trim().length < 5) {
+      await this.sendMessage(chatId, '⚠️ कृपया केसची सविस्तर माहिती किंवा कथन पाठवा.');
+      return;
+    }
+
+    session.state = 'GENERATING';
+    session.updatedAt = Date.now();
+
+    await this.sendMessage(
+      chatId,
+      `⚡ <b>केसचे कथन प्राप्त झाले!</b>\n\n🤖 <i>AI Legal Copilot माहितीचे विश्लेषण करून ${escapeHtml(template.title)} चा मसुदा तयार करत आहे...\n(कृपया ५-१० सेकंद प्रतीक्षा करा)</i>`
+    );
+
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      const result = await copilotService.generateDraftFromPrompt(narrationText, template.id, apiKey);
+
+      const mergedFacts = { ...result.facts, todaysDate: getMarathiTodayDate() };
+      session.facts = mergedFacts;
+
+      await this.finishDraftAndSendFiles(chatId, session, template, result.documentHtml, 'Direct Narration (AI Auto-Draft)');
+    } catch (err: any) {
+      console.error('Failed to generate draft from narration in Telegram:', err);
+      await this.sendMessage(chatId, `❌ मसुदा तयार करताना त्रुटी आली: ${escapeHtml(err.message || 'Unknown error')}\n\nकृपया पुन्हा प्रयत्न करण्यासाठी /start दाबा.`);
+      this.sessions.delete(chatId);
     }
   }
 
@@ -539,24 +683,34 @@ export class TelegramBotService {
     return '';
   }
 
-  private async finishWizardAndSendDocx(chatId: number, session: TelegramSession) {
+  private async finishWizardAndSendFiles(chatId: number, session: TelegramSession) {
     if (!session.templateId) return;
     const template = templateService.getTemplate(session.templateId);
     if (!template) return;
 
-    await this.sendMessage(chatId, `🎉 <b>All particulars recorded successfully!</b>\n⚙️ <i>Generating court-compliant .docx legal document...</i>`);
+    await this.sendMessage(chatId, `🎉 <b>सर्व प्रश्नोत्तरे नोंदवली गेली आहेत!</b>`);
+
+    const mergedHtml = templateService.mergeTemplate(template, session.facts);
+    await this.finishDraftAndSendFiles(chatId, session, template, mergedHtml, 'प्रश्नावली स्वरूप (Questionnaire Wizard)');
+  }
+
+  private async finishDraftAndSendFiles(
+    chatId: number,
+    session: TelegramSession,
+    template: LegalTemplate,
+    mergedHtml: string,
+    modeLabel: string
+  ) {
+    await this.sendMessage(chatId, `⚙️ <b>मसुदा तयार झाला आहे!</b>\n📄 <i>Word (.docx) आणि PDF (.pdf) फाइल्स तयार केल्या जात आहेत...</i>`);
 
     try {
-      // Merge template with facts
-      const mergedHtml = templateService.mergeTemplate(template, session.facts);
-
-      // Save generated draft into server-side DraftStore so it appears in Document Drafts in Web UI
+      // 1. Save generated draft into server-side DraftStore so it appears in Document Drafts in Web UI
       try {
         const partyName = this.getDraftPartyName(session.facts, template.fields);
         const partySuffix = partyName ? ` (${partyName})` : '';
         draftStore.saveDraft({
           id: `telegram_${chatId}_${Date.now()}`,
-          name: `Telegram Draft${partySuffix}`,
+          name: `Telegram: ${template.title}${partySuffix}`,
           templateId: template.id,
           facts: session.facts,
           documentBody: mergedHtml,
@@ -569,27 +723,56 @@ export class TelegramBotService {
         console.error('Failed to save Telegram draft to store:', saveErr);
       }
 
-      // Generate DOCX Buffer
+      const safeBaseName = `${(template.titleMr || template.title).replace(/[^a-zA-Z0-9_\u0900-\u097F\-]/g, '_')}_Draft`;
+      const docxFileName = `${safeBaseName}.docx`;
+      const pdfFileName = `${safeBaseName}.pdf`;
+
+      // 2. Generate DOCX Buffer
       const docxBuffer = await exportService.generateDocx({
         title: template.title,
         content: mergedHtml,
         paperSize: 'legal'
       });
 
-      const fileName = `${template.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}_Draft.docx`;
-
-      // Upload DOCX to Telegram Chat
+      // 3. Upload DOCX to Telegram Chat
       await this.sendDocument(
         chatId,
         docxBuffer,
-        fileName,
-        `📄 <b>Here is your completed court document draft:</b>\n\n• <b>Template:</b> ${escapeHtml(template.title)}\n• <b>Format:</b> Microsoft Word (.docx)\n• <b>Paper Size:</b> Legal (8.5" x 14")`
+        docxFileName,
+        `📄 <b>Word Document (.docx)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.title)}\n• <b>पद्धत:</b> ${escapeHtml(modeLabel)}\n• <b>कागद आकार:</b> Legal (8.5" x 14")`,
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      );
+
+      // 4. Generate & Upload PDF Buffer
+      try {
+        const pdfBuffer = await exportService.generatePdf({
+          title: template.title,
+          content: mergedHtml,
+          paperSize: 'legal'
+        });
+
+        await this.sendDocument(
+          chatId,
+          pdfBuffer,
+          pdfFileName,
+          `📕 <b>Court Ready PDF (.pdf)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.title)}\n• <b>कागद आकार:</b> Legal (Court Standard Margins)`,
+          'application/pdf'
+        );
+      } catch (pdfErr: any) {
+        console.warn('Telegram PDF export failed or browser unavailable:', pdfErr?.message);
+        await this.sendMessage(chatId, `ℹ️ <i>PDF तयार करता आले नाही, परंतु वरील Word (.docx) फाइल यशस्वीरित्या पाठवली आहे.</i>`);
+      }
+
+      await this.sendMessage(
+        chatId,
+        `✅ <b>मसुदा यशस्वीरित्या पूर्ण झाला!</b>\n\n• दोन्ही फाइल्स (.docx व .pdf) वर डाउनलोडसाठी उपलब्ध आहेत.\n• हा मसुदा तुमच्या LegalAssist वेब डॅशबोर्डमध्येही सेव्ह झाला आहे.\n\n🔄 नवीन मसुदा तयार करण्यासाठी /start किंवा /new दाबा.`
       );
 
       this.sessions.delete(chatId);
     } catch (err: any) {
-      console.error('Failed to generate Telegram document:', err);
-      await this.sendMessage(chatId, `❌ Failed to generate document: ${escapeHtml(err.message || 'Unknown error')}`);
+      console.error('Failed to generate Telegram document files:', err);
+      await this.sendMessage(chatId, `❌ दस्तऐवज पाठवताना त्रुटी आली: ${escapeHtml(err.message || 'Unknown error')}`);
+      this.sessions.delete(chatId);
     }
   }
 
@@ -660,7 +843,7 @@ export class TelegramBotService {
     }
   }
 
-  public async sendDocument(chatId: number, buffer: Buffer, filename: string, caption?: string) {
+  public async sendDocument(chatId: number, buffer: Buffer, filename: string, caption?: string, mimeType?: string) {
     if (!this.botToken) return;
     try {
       const formData = new FormData();
@@ -670,7 +853,8 @@ export class TelegramBotService {
         formData.append('parse_mode', 'HTML');
       }
 
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      const contentType = mimeType || (filename.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      const blob = new Blob([buffer], { type: contentType });
       formData.append('document', blob, filename);
 
       const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
