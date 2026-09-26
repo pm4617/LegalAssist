@@ -14,6 +14,7 @@ import {
   Type,
   Download,
   Upload,
+  ExternalLink,
 } from 'lucide-react';
 import { LegalTemplate, TemplateCategory } from '../types';
 import { TemplateEditorModal } from './TemplateEditorModal';
@@ -429,7 +430,14 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                           <span className="flex items-center gap-1">
                             <Tag className="w-3 h-3 text-slate-400 dark:text-slate-500" /> {getCategoryLabel(tmpl.category)}
                           </span>
-                          <span className="font-mono text-[10px] text-slate-500">{tmpl.fields.length} fields</span>
+                          <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                            {tmpl.referencePdf && (
+                              <span className="px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 font-semibold border border-rose-200 dark:border-rose-900/50 flex items-center gap-0.5" title={`Reference PDF: ${tmpl.referencePdf.fileName}`}>
+                                <FileText className="w-2.5 h-2.5" /> PDF
+                              </span>
+                            )}
+                            <span className="text-slate-500">{tmpl.fields.length} fields</span>
+                          </div>
                         </div>
                       </div>
                     );
@@ -461,6 +469,18 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
                       </div>
                       <h3 className="text-base font-bold text-slate-900 dark:text-white">{activePreview.title}</h3>
                       {activePreview.titleMr && <p className="text-xs text-indigo-700 dark:text-indigo-300 font-serif mt-0.5">{activePreview.titleMr}</p>}
+                      {activePreview.referencePdf && (
+                        <button
+                          type="button"
+                          onClick={() => window.open(`/api/templates/${activePreview.id}/pdf`, '_blank')}
+                          className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 border border-rose-200 dark:border-rose-900/40 text-rose-700 dark:text-rose-300 text-xs font-medium transition cursor-pointer"
+                          title="Click to view reference court PDF in new tab"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                          <span>Reference PDF: {activePreview.referencePdf.fileName}</span>
+                          <ExternalLink className="w-3 h-3 text-rose-400" />
+                        </button>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2">

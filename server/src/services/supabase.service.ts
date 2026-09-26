@@ -1,4 +1,6 @@
 import pg from 'pg';
+import fs from 'fs';
+import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { LegalTemplate, DocumentDraft } from '../types/index.js';
@@ -26,36 +28,75 @@ let supabaseClient: SupabaseClient | null = null;
 // Initialize PostgreSQL Pool if Database URL or PG Host/Password is set
 if (databaseUrl || (pgHost && pgPassword)) {
   try {
+    const poolConfig: pg.PoolConfig = {
+      ssl: { rejectUnauthorized: false },
+      max: 5, // Recommended for PgBouncer / serverless pooler
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 30000, // 30s to allow cross-region TLS handshake & pooler spin-up
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10000,
+      statement_timeout: 45000,
+    };
+
     if (databaseUrl) {
       pgPool = new Pool({
+        ...poolConfig,
         connectionString: databaseUrl,
-        ssl: { rejectUnauthorized: false },
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
       });
     } else {
       pgPool = new Pool({
+        ...poolConfig,
         host: pgHost,
         port: parseInt(process.env.PGPORT || '6543', 10),
         user: process.env.PGUSER || 'postgres',
         password: pgPassword,
         database: process.env.PGDATABASE || 'postgres',
-        ssl: { rejectUnauthorized: false },
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
       });
     }
 
     pgPool.on('error', (err) => {
-      console.warn('⚠️ [Supabase DB Pool] Unexpected error on idle client:', err.message);
+      console.warn('⚠️ [Supabase DB Pool] Idle client warning (will reconnect):', err.message);
     });
 
-    console.log('⚡ [Supabase DB] Connected to Supabase PostgreSQL cloud database!');
+    console.log('⚡ [Supabase DB] Initialized Supabase PostgreSQL cloud pooler (30s timeout, auto-retry).');
   } catch (err: any) {
     console.error('❌ [Supabase DB] Failed to initialize PostgreSQL pool:', err.message);
   }
+}
+
+/**
+ * Resilient query executor with automatic retry for transient PgBouncer / network timeouts
+ */
+export async function executePgQuery<T extends pg.QueryResultRow = any>(
+  text: string,
+  params: any[] = [],
+  retries: number = 2
+): Promise<pg.QueryResult<T>> {
+  if (!pgPool) throw new Error('Postgres pool not initialized');
+
+  let lastError: any;
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      return await pgPool.query<T>(text, params);
+    } catch (err: any) {
+      lastError = err;
+      const msg = err.message || '';
+      const isTransient =
+        msg.includes('timeout') ||
+        msg.includes('Connection terminated') ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('closed unexpectedly') ||
+        msg.includes('client has already been released');
+
+      if (!isTransient || attempt > retries) {
+        throw err;
+      }
+      const backoff = attempt * 1000;
+      console.warn(`⚠️ [Supabase DB] Transient network latency on attempt ${attempt}/${retries + 1}. Retrying in ${backoff}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+  throw lastError;
 }
 
 // Initialize Supabase JS Client if URL and Key are provided
@@ -76,13 +117,19 @@ export const isSupabaseConfigured = (): boolean => {
 
 export { pgPool, supabaseClient };
 
+function getLocalPdfDir(): string {
+  const dir = path.join(process.cwd(), 'data', 'template-pdfs');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /**
  * Ensures table existence on boot if connected via PostgreSQL
  */
 export async function ensureSupabaseTables(): Promise<void> {
   if (!pgPool) return;
   try {
-    await pgPool.query(`
+    await executePgQuery(`
       CREATE TABLE IF NOT EXISTS public.custom_templates (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -104,14 +151,30 @@ export async function ensureSupabaseTables(): Promise<void> {
       );
 
       CREATE INDEX IF NOT EXISTS idx_custom_drafts_updated_at ON public.custom_drafts(updated_at DESC);
+
+      -- Template Reference PDFs table with CASCADE delete
+      CREATE TABLE IF NOT EXISTS public.template_pdfs (
+        template_id TEXT PRIMARY KEY,
+        file_name TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        mime_type TEXT DEFAULT 'application/pdf',
+        pdf_data BYTEA NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_template_pdfs_template_id ON public.template_pdfs(template_id);
     `);
+    console.log('✅ [Supabase DB] Table verification verified successfully.');
   } catch (err: any) {
-    console.warn('⚠️ [Supabase DB] Table verification check:', err.message);
+    console.warn('⚠️ [Supabase DB] Table verification check (will use existing tables/fallback):', err.message);
   }
 }
 
-// Run schema verification in background
-ensureSupabaseTables().catch(() => {});
+// Run schema verification in background after a short delay so boot queries do not compete
+setTimeout(() => {
+  ensureSupabaseTables().catch(() => {});
+}, 500);
 
 /**
  * -------------------------------------------------------------
@@ -123,7 +186,7 @@ export async function fetchCustomTemplatesFromSupabase(): Promise<LegalTemplate[
   // 1. Try PostgreSQL Pool
   if (pgPool) {
     try {
-      const res = await pgPool.query(
+      const res = await executePgQuery(
         'SELECT template_data FROM public.custom_templates ORDER BY updated_at DESC;'
       );
       return res.rows.map((row) => row.template_data as LegalTemplate);
@@ -157,7 +220,7 @@ export async function saveCustomTemplateToSupabase(template: LegalTemplate): Pro
 
   if (pgPool) {
     try {
-      await pgPool.query(
+      await executePgQuery(
         `INSERT INTO public.custom_templates (id, title, category, template_data, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (id) DO UPDATE 
@@ -205,9 +268,12 @@ export async function saveCustomTemplateToSupabase(template: LegalTemplate): Pro
 }
 
 export async function deleteCustomTemplateFromSupabase(id: string): Promise<boolean> {
+  // Also delete associated PDF attachment
+  await deleteTemplatePdf(id);
+
   if (pgPool) {
     try {
-      await pgPool.query('DELETE FROM public.custom_templates WHERE id = $1;', [id]);
+      await executePgQuery('DELETE FROM public.custom_templates WHERE id = $1;', [id]);
       return true;
     } catch (err: any) {
       console.error(`❌ [Supabase DB] Failed to delete template "${id}":`, err.message);
@@ -268,6 +334,131 @@ export async function batchUpsertCustomTemplatesToSupabase(templates: LegalTempl
 
 /**
  * -------------------------------------------------------------
+ * Template Reference PDF Operations (Stored in DB as BYTEA)
+ * -------------------------------------------------------------
+ */
+
+export async function saveTemplatePdf(
+  templateId: string,
+  fileName: string,
+  fileSize: number,
+  pdfBuffer: Buffer,
+  mimeType: string = 'application/pdf'
+): Promise<boolean> {
+  const now = new Date().toISOString();
+
+  // 1. PostgreSQL DB Storage
+  if (pgPool) {
+    try {
+      await executePgQuery(
+        `INSERT INTO public.template_pdfs (template_id, file_name, file_size, mime_type, pdf_data, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (template_id) DO UPDATE 
+         SET file_name = EXCLUDED.file_name,
+             file_size = EXCLUDED.file_size,
+             mime_type = EXCLUDED.mime_type,
+             pdf_data = EXCLUDED.pdf_data,
+             updated_at = EXCLUDED.updated_at;`,
+        [templateId, fileName, fileSize, mimeType, pdfBuffer, now, now]
+      );
+      console.log(`✅ [Supabase DB] Stored reference PDF "${fileName}" (${fileSize} bytes) for template "${templateId}".`);
+    } catch (err: any) {
+      console.error('❌ [Supabase DB] Error saving template PDF to Postgres:', err.message);
+    }
+  }
+
+  // 2. Local disk file backup
+  try {
+    const dir = getLocalPdfDir();
+    fs.writeFileSync(path.join(dir, `${templateId}.pdf`), pdfBuffer);
+    fs.writeFileSync(
+      path.join(dir, `${templateId}.json`),
+      JSON.stringify({ fileName, fileSize, mimeType, updatedAt: now }, null, 2),
+      'utf8'
+    );
+  } catch (err: any) {
+    console.warn('⚠️ [Local PDF] Error writing local PDF copy:', err.message);
+  }
+
+  return true;
+}
+
+export async function getTemplatePdf(
+  templateId: string
+): Promise<{ fileName: string; fileSize: number; mimeType: string; pdfBuffer: Buffer } | null> {
+  // 1. Fetch from PostgreSQL
+  if (pgPool) {
+    try {
+      const res = await executePgQuery(
+        'SELECT file_name, file_size, mime_type, pdf_data FROM public.template_pdfs WHERE template_id = $1;',
+        [templateId]
+      );
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        return {
+          fileName: row.file_name,
+          fileSize: row.file_size,
+          mimeType: row.mime_type || 'application/pdf',
+          pdfBuffer: Buffer.from(row.pdf_data),
+        };
+      }
+    } catch (err: any) {
+      console.warn('⚠️ [Supabase DB] Error fetching template PDF from Postgres:', err.message);
+    }
+  }
+
+  // 2. Fallback to local disk file
+  try {
+    const dir = getLocalPdfDir();
+    const filePath = path.join(dir, `${templateId}.pdf`);
+    const metaPath = path.join(dir, `${templateId}.json`);
+    if (fs.existsSync(filePath)) {
+      const pdfBuffer = fs.readFileSync(filePath);
+      let fileName = `${templateId}.pdf`;
+      let mimeType = 'application/pdf';
+      let fileSize = pdfBuffer.length;
+      if (fs.existsSync(metaPath)) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          fileName = meta.fileName || fileName;
+          mimeType = meta.mimeType || mimeType;
+          fileSize = meta.fileSize || fileSize;
+        } catch {}
+      }
+      return { fileName, fileSize, mimeType, pdfBuffer };
+    }
+  } catch (err: any) {
+    console.warn('⚠️ [Local PDF] Error reading local PDF copy:', err.message);
+  }
+
+  return null;
+}
+
+export async function deleteTemplatePdf(templateId: string): Promise<boolean> {
+  // 1. Delete from PostgreSQL
+  if (pgPool) {
+    try {
+      await executePgQuery('DELETE FROM public.template_pdfs WHERE template_id = $1;', [templateId]);
+      console.log(`🗑️ [Supabase DB] Deleted reference PDF for template "${templateId}".`);
+    } catch (err: any) {
+      console.error(`❌ [Supabase DB] Error deleting template PDF:`, err.message);
+    }
+  }
+
+  // 2. Delete local disk file
+  try {
+    const dir = getLocalPdfDir();
+    const filePath = path.join(dir, `${templateId}.pdf`);
+    const metaPath = path.join(dir, `${templateId}.json`);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+  } catch {}
+
+  return true;
+}
+
+/**
+ * -------------------------------------------------------------
  * Custom Drafts Supabase Operations
  * -------------------------------------------------------------
  */
@@ -275,7 +466,7 @@ export async function batchUpsertCustomTemplatesToSupabase(templates: LegalTempl
 export async function fetchCustomDraftsFromSupabase(): Promise<DocumentDraft[] | null> {
   if (pgPool) {
     try {
-      const res = await pgPool.query(
+      const res = await executePgQuery(
         'SELECT draft_data FROM public.custom_drafts ORDER BY updated_at DESC;'
       );
       return res.rows.map((row) => row.draft_data as DocumentDraft);
@@ -308,7 +499,7 @@ export async function saveCustomDraftToSupabase(draft: DocumentDraft): Promise<b
 
   if (pgPool) {
     try {
-      await pgPool.query(
+      await executePgQuery(
         `INSERT INTO public.custom_drafts (id, name, template_id, draft_data, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (id) DO UPDATE 
@@ -358,7 +549,7 @@ export async function saveCustomDraftToSupabase(draft: DocumentDraft): Promise<b
 export async function deleteCustomDraftFromSupabase(id: string): Promise<boolean> {
   if (pgPool) {
     try {
-      await pgPool.query('DELETE FROM public.custom_drafts WHERE id = $1;', [id]);
+      await executePgQuery('DELETE FROM public.custom_drafts WHERE id = $1;', [id]);
       return true;
     } catch (err: any) {
       console.error(`❌ [Supabase DB] Failed to delete draft "${id}":`, err.message);

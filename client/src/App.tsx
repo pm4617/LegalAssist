@@ -17,7 +17,7 @@ export default function App() {
 
   const [isCopilotPinned, setIsCopilotPinned] = useState<boolean>(() => {
     const saved = localStorage.getItem('juris_copilot_pinned');
-    return saved !== null ? saved === 'true' : true;
+    return saved !== null ? saved === 'true' : false;
   });
 
   // Resizable Right Side Copilot Pane State
@@ -226,7 +226,7 @@ export default function App() {
         </div>
 
         <CopilotSidebar
-          defaultOpen={true}
+          defaultOpen={false}
           clickOutsideToClose={!isCopilotPinned}
           labels={{
             title: '🏛️ Legal AI Copilot',

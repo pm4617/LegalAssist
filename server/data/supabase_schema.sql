@@ -53,3 +53,28 @@ CREATE POLICY "Public access to custom_drafts"
   FOR ALL
   USING (true)
   WITH CHECK (true);
+
+
+-- 3. Table: template_pdfs (Reference Court Pleading PDF Attachments)
+CREATE TABLE IF NOT EXISTS public.template_pdfs (
+  template_id TEXT PRIMARY KEY,
+  file_name TEXT NOT NULL,
+  file_size INTEGER NOT NULL,
+  mime_type TEXT DEFAULT 'application/pdf',
+  pdf_data BYTEA NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_template_pdfs_template_id ON public.template_pdfs(template_id);
+
+-- Enable Row Level Security (RLS)
+ALTER TABLE public.template_pdfs ENABLE ROW LEVEL SECURITY;
+
+-- Allow public read/write access
+DROP POLICY IF EXISTS "Public access to template_pdfs" ON public.template_pdfs;
+CREATE POLICY "Public access to template_pdfs"
+  ON public.template_pdfs
+  FOR ALL
+  USING (true)
+  WITH CHECK (true);

@@ -39,7 +39,7 @@ import {
   Copy,
   Sparkles,
 } from 'lucide-react';
-import { LegalTemplate, FieldDefinition, TemplateCategory, TemplateLanguage } from '../types';
+import { LegalTemplate, FieldDefinition, TemplateCategory, TemplateLanguage, TemplateReferencePdf } from '../types';
 import { convertToDevanagari } from '../utils/transliterate';
 
 interface TemplateEditorModalProps {
@@ -110,6 +110,9 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
   );
 
   const [fields, setFields] = useState<FieldDefinition[]>(initialTemplate?.fields || []);
+  const [referencePdf, setReferencePdf] = useState<TemplateReferencePdf | undefined>(
+    initialTemplate?.referencePdf
+  );
 
   const handleDuplicateField = (idx: number) => {
     const target = fields[idx];
@@ -982,6 +985,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
       setTemplateText(initialTemplate?.templateText || '');
       setStatutoryRequirements(initialTemplate?.statutoryRequirements || []);
       setFields(initialTemplate?.fields || []);
+      setReferencePdf(initialTemplate?.referencePdf);
       setNewStatRequirement('');
       setError(null);
       setActiveTab('basic');
@@ -989,6 +993,53 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
   }, [isOpen, initialTemplate]);
 
   if (!isOpen) return null;
+
+  const handlePdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Only PDF documents (.pdf) can be uploaded as reference pleadings.');
+      return;
+    }
+
+    if (file.size > 15 * 1024 * 1024) {
+      setError('Reference PDF file must be smaller than 15MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64Data = reader.result as string;
+      setReferencePdf({
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'application/pdf',
+        uploadedAt: new Date().toISOString(),
+        dataBase64: base64Data,
+      });
+      setError(null);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleViewPdf = () => {
+    if (!referencePdf) return;
+    if (referencePdf.dataBase64) {
+      const win = window.open();
+      if (win) {
+        win.document.write(
+          `<iframe src="${referencePdf.dataBase64}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`
+        );
+      }
+    } else if (id) {
+      window.open(`/api/templates/${id}/pdf`, '_blank');
+    }
+  };
+
+  const handleRemovePdf = () => {
+    setReferencePdf(undefined);
+  };
 
   const handleAddField = () => {
     const newField: FieldDefinition = {
@@ -1066,6 +1117,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
         standardClauses: initialTemplate?.standardClauses || [],
         templateText: bodyContent.trim(),
         isBuiltIn: false,
+        referencePdf: referencePdf || undefined,
       });
       onClose();
     } catch (err: any) {
@@ -1400,6 +1452,88 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
                     <Plus className="w-3.5 h-3.5" /> Add Rule
                   </button>
                 </div>
+              </div>
+
+              {/* Reference Court Pleading PDF (Stored in DB) */}
+              <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 bg-slate-50 dark:bg-slate-950/40">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <label className="block text-slate-800 dark:text-slate-300 font-semibold text-xs flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-rose-500" />
+                      <span>Reference Court Pleading (PDF) / संदर्भ न्यायालयीन दस्तऐवज (PDF)</span>
+                    </label>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      Upload an authentic reference court pleading/petition. The Legal AI Copilot will cross-reference this document to adopt court terminology and formatting during drafting.
+                    </p>
+                  </div>
+                </div>
+
+                {referencePdf ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xs">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-rose-500/10 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                        <FileText className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={handleViewPdf}
+                          className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline truncate block text-left cursor-pointer"
+                          title="Click to view reference PDF in new tab"
+                        >
+                          {referencePdf.fileName}
+                        </button>
+                        <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+                          <span>{(referencePdf.fileSize / 1024).toFixed(1)} KB</span>
+                          <span>•</span>
+                          <span className="text-emerald-600 dark:text-emerald-400 font-medium">Persisted in Supabase DB</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleViewPdf}
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-lg transition"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>View PDF</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRemovePdf}
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg border border-rose-200 dark:border-rose-900/50 transition"
+                        title="Remove reference PDF attachment"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input
+                      type="file"
+                      id="template-reference-pdf-input"
+                      accept="application/pdf,.pdf"
+                      onChange={handlePdfFileSelect}
+                      className="hidden"
+                    />
+                    <label
+                      htmlFor="template-reference-pdf-input"
+                      className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-indigo-500 dark:hover:border-indigo-400 rounded-xl cursor-pointer bg-white/50 dark:bg-slate-900/50 hover:bg-indigo-50/20 dark:hover:bg-indigo-950/20 transition group"
+                    >
+                      <Upload className="w-5 h-5 text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition mb-1" />
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                        Upload Reference Court Pleading PDF (न्यायालयीन संदर्भासाठी PDF निवडा)
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        PDF format • Stored permanently in DB • Referenced by AI during draft generation
+                      </span>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
           )}

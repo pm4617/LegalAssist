@@ -59,6 +59,10 @@ export class TemplateService {
     return templateStore.cloneTemplateAsync(sourceId, newId, newTitle);
   }
 
+  async getTemplatePdf(id: string) {
+    return templateStore.getTemplatePdf(id);
+  }
+
   mergeTemplate(template: LegalTemplate, facts: ClientFacts): string {
     let text = template.templateText;
 

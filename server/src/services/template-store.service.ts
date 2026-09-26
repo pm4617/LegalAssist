@@ -9,6 +9,9 @@ import {
   saveCustomTemplateToSupabase,
   deleteCustomTemplateFromSupabase,
   batchUpsertCustomTemplatesToSupabase,
+  saveTemplatePdf,
+  getTemplatePdf,
+  deleteTemplatePdf,
 } from './supabase.service.js';
 
 class TemplateStore {
@@ -180,11 +183,43 @@ class TemplateStore {
     const existingIdx = custom.findIndex((t) => t.id === template.id);
 
     const now = new Date().toISOString();
+
+    // Handle reference PDF metadata and binary extraction
+    let cleanRefPdf = template.referencePdf ? { ...template.referencePdf } : undefined;
+    if (template.referencePdf?.dataBase64) {
+      const rawBase64 = template.referencePdf.dataBase64.replace(/^data:application\/pdf;base64,/, '');
+      const pdfBuf = Buffer.from(rawBase64, 'base64');
+      const fileName = template.referencePdf.fileName || `${template.id}.pdf`;
+      const mimeType = template.referencePdf.mimeType || 'application/pdf';
+      const fileSize = pdfBuf.length;
+
+      // Save raw PDF binary to DB and local storage
+      saveTemplatePdf(template.id, fileName, fileSize, pdfBuf, mimeType).catch((err) => {
+        console.error('❌ Failed saving template PDF:', err.message);
+      });
+
+      // Strip large dataBase64 string from template JSON model
+      delete cleanRefPdf?.dataBase64;
+      cleanRefPdf = {
+        fileName,
+        fileSize,
+        mimeType,
+        uploadedAt: now,
+      };
+    } else if (!template.referencePdf) {
+      // PDF was removed while editing
+      if (existingIdx >= 0 && custom[existingIdx].referencePdf) {
+        deleteTemplatePdf(template.id).catch(() => {});
+      }
+      cleanRefPdf = undefined;
+    }
+
     const updated: LegalTemplate = {
       ...template,
       isBuiltIn: false,
       updatedAt: now,
       createdAt: existingIdx >= 0 ? (custom[existingIdx].createdAt || now) : now,
+      referencePdf: cleanRefPdf,
     };
 
     if (existingIdx >= 0) {
@@ -205,7 +240,49 @@ class TemplateStore {
 
   /** Upsert a custom template asynchronously, awaiting Supabase write. */
   async saveTemplateAsync(template: LegalTemplate): Promise<LegalTemplate> {
-    const updated = this.saveTemplate(template);
+    const custom = this.loadCustomTemplates();
+    const existingIdx = custom.findIndex((t) => t.id === template.id);
+    const now = new Date().toISOString();
+
+    let cleanRefPdf = template.referencePdf ? { ...template.referencePdf } : undefined;
+    if (template.referencePdf?.dataBase64) {
+      const rawBase64 = template.referencePdf.dataBase64.replace(/^data:application\/pdf;base64,/, '');
+      const pdfBuf = Buffer.from(rawBase64, 'base64');
+      const fileName = template.referencePdf.fileName || `${template.id}.pdf`;
+      const mimeType = template.referencePdf.mimeType || 'application/pdf';
+      const fileSize = pdfBuf.length;
+
+      await saveTemplatePdf(template.id, fileName, fileSize, pdfBuf, mimeType);
+
+      delete cleanRefPdf?.dataBase64;
+      cleanRefPdf = {
+        fileName,
+        fileSize,
+        mimeType,
+        uploadedAt: now,
+      };
+    } else if (!template.referencePdf) {
+      if (existingIdx >= 0 && custom[existingIdx].referencePdf) {
+        await deleteTemplatePdf(template.id);
+      }
+      cleanRefPdf = undefined;
+    }
+
+    const updated: LegalTemplate = {
+      ...template,
+      isBuiltIn: false,
+      updatedAt: now,
+      createdAt: existingIdx >= 0 ? (custom[existingIdx].createdAt || now) : now,
+      referencePdf: cleanRefPdf,
+    };
+
+    if (existingIdx >= 0) {
+      custom[existingIdx] = updated;
+    } else {
+      custom.push(updated);
+    }
+    this.saveCustomTemplates(custom);
+
     if (isSupabaseConfigured()) {
       await saveCustomTemplateToSupabase(updated);
     }
@@ -224,6 +301,11 @@ class TemplateStore {
     custom.splice(idx, 1);
     this.saveCustomTemplates(custom);
 
+    // Delete associated PDF
+    deleteTemplatePdf(id).catch((e) => {
+      console.warn('⚠️ [TemplateStore] Failed deleting template PDF on delete:', e.message);
+    });
+
     if (isSupabaseConfigured()) {
       deleteCustomTemplateFromSupabase(id).catch((e) => {
         console.warn('⚠️ [TemplateStore] Background Supabase delete error:', e.message);
@@ -232,10 +314,27 @@ class TemplateStore {
   }
 
   async deleteTemplateAsync(id: string): Promise<void> {
-    this.deleteTemplate(id);
+    const builtIn = TEMPLATES.find((t) => t.id === id);
+    if (builtIn) {
+      throw new Error(`Cannot delete built-in template "${id}". Clone it first to create an editable copy.`);
+    }
+    const custom = this.loadCustomTemplates();
+    const idx = custom.findIndex((t) => t.id === id);
+    if (idx === -1) throw new Error(`Template "${id}" not found in custom store.`);
+    custom.splice(idx, 1);
+    this.saveCustomTemplates(custom);
+
+    // Await deletion of associated PDF
+    await deleteTemplatePdf(id);
+
     if (isSupabaseConfigured()) {
       await deleteCustomTemplateFromSupabase(id);
     }
+  }
+
+  /** Fetch reference PDF binary and metadata for a template */
+  async getTemplatePdf(id: string) {
+    return getTemplatePdf(id);
   }
 
   /** Clone a template as a new custom template with a new id */

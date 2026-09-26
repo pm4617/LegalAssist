@@ -59,6 +59,27 @@ app.get('/api/templates/:id', async (req, res) => {
   }
 });
 
+// View / Stream Reference PDF for a Template
+app.get('/api/templates/:id/pdf', async (req, res) => {
+  try {
+    const pdfData = await templateService.getTemplatePdf(req.params.id);
+    if (!pdfData || !pdfData.pdfBuffer) {
+      return res.status(404).json({ error: 'No reference PDF found for this template' });
+    }
+
+    res.setHeader('Content-Type', pdfData.mimeType || 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(pdfData.fileName)}"`
+    );
+    res.setHeader('Content-Length', pdfData.pdfBuffer.length);
+    res.send(pdfData.pdfBuffer);
+  } catch (err: any) {
+    console.error('Error fetching template PDF:', err);
+    res.status(500).json({ error: 'Failed to retrieve reference PDF', details: err.message });
+  }
+});
+
 // Create a new custom template
 app.post('/api/templates', async (req, res) => {
   try {

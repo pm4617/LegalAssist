@@ -2362,6 +2362,33 @@ Always include: one to fill client details, one to audit compliance, one templat
             </button>
           )}
 
+          {/* Reference PDF Quick View (if template has attached reference PDF) */}
+          {activeTemplate?.referencePdf && (
+            <button
+              onClick={() => window.open(`/api/templates/${activeTemplate.id}/pdf`, '_blank')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/80 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 transition"
+              title={`View reference court PDF: ${activeTemplate.referencePdf.fileName}`}
+            >
+              <FileText className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+              <span className="hidden lg:inline truncate max-w-[140px]">{activeTemplate.referencePdf.fileName}</span>
+              <span className="lg:hidden">PDF</span>
+            </button>
+          )}
+
+          {/* Toggle Legal AI Copilot Chatbot */}
+          <button
+            onClick={() => {
+              const btn = document.querySelector('.copilotKitButton') as HTMLButtonElement;
+              if (btn) btn.click();
+              else if (onTogglePinCopilot) onTogglePinCopilot();
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/80 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 transition"
+            title="Toggle Legal AI Copilot Chatbot"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+            <span className="hidden sm:inline">AI Copilot</span>
+          </button>
+
           {/* Settings */}
           <button
             onClick={() => setIsSettingsOpen(true)}
@@ -2566,6 +2593,34 @@ Always include: one to fill client details, one to audit compliance, one templat
                       <strong>पक्षकार नियम (Party Rule):</strong> केवळ प्रत्यक्ष संबंधित पक्षकार / अर्जदार / वारस / आरोपी यांचीच माहिती भरा. ज्यांची माहिती दिली नसेल, त्यांचे क्रमांक, पत्ते, कोष्टक ओळी व स्वाक्षरी ओळी दस्तऐवजातून आपोआप वगळल्या जातील.
                     </div>
                   </div>
+
+                  {/* Active Reference Court PDF Banner */}
+                  {activeTemplate?.referencePdf && (
+                    <div className="px-3.5 py-2.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-rose-900 dark:text-rose-200 text-xs flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileText className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                        <span className="truncate">
+                          <strong>Reference Court PDF:</strong>{' '}
+                          <button
+                            type="button"
+                            onClick={() => window.open(`/api/templates/${activeTemplate.id}/pdf`, '_blank')}
+                            className="underline font-semibold hover:text-rose-950 dark:hover:text-white cursor-pointer"
+                            title="Click to view reference PDF"
+                          >
+                            {activeTemplate.referencePdf.fileName}
+                          </button>
+                          {' '}— AI will reference this attached pleading when drafting.
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => window.open(`/api/templates/${activeTemplate.id}/pdf`, '_blank')}
+                        className="px-2.5 py-1 bg-rose-100 hover:bg-rose-200 dark:bg-rose-900/60 dark:hover:bg-rose-800 text-rose-800 dark:text-rose-200 rounded-lg text-xs font-semibold shrink-0 transition"
+                      >
+                        View PDF
+                      </button>
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
@@ -3656,40 +3711,48 @@ Always include: one to fill client details, one to audit compliance, one templat
       {/* NEW DOCUMENT DRAFT MODAL */}
       {isNewDraftModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-150 text-slate-900 dark:text-white">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <PlusCircle className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in duration-150 text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3.5">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <PlusCircle className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                 Create New Document Draft
               </h3>
               <button
                 type="button"
                 onClick={() => setIsNewDraftModalOpen(false)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1"
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-600 dark:text-slate-400">
-              Select how you want to initialize your new document draft for <strong className="text-indigo-600 dark:text-indigo-300">{activeTemplate?.title}</strong>:
+            <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 leading-normal">
+              Select how you want to initialize your new document draft for{' '}
+              <span className="font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded-md border border-indigo-200/60 dark:border-indigo-800/60">
+                {activeTemplate?.title}
+              </span>:
             </p>
 
-            <div className="space-y-3">
+            <div className="space-y-3 pt-1">
               {/* Option A: Keep current inputs / Duplicate */}
               <button
                 type="button"
                 onClick={() => handleCreateNewDraft('duplicate')}
-                className="w-full text-left p-3.5 bg-slate-50 hover:bg-indigo-50 dark:bg-slate-950 dark:hover:bg-indigo-950/40 border border-slate-200 hover:border-indigo-500 dark:border-slate-800 dark:hover:border-indigo-600/80 rounded-xl transition group flex items-start gap-3 cursor-pointer"
+                className="w-full text-left p-4 bg-slate-50 hover:bg-indigo-50/70 dark:bg-slate-800/60 dark:hover:bg-indigo-950/40 border-2 border-indigo-200 hover:border-indigo-500 dark:border-slate-700 dark:hover:border-indigo-500 rounded-xl transition group flex items-start gap-3.5 cursor-pointer shadow-sm"
               >
-                <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950 border border-indigo-200 dark:border-indigo-700/60 flex items-center justify-center text-indigo-600 dark:text-indigo-300 shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition">
-                  <Copy className="w-4 h-4" />
+                <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-900/60 border border-indigo-300 dark:border-indigo-700 flex items-center justify-center text-indigo-700 dark:text-indigo-300 shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition">
+                  <Copy className="w-5 h-5" />
                 </div>
-                <div className="space-y-0.5">
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-white">
-                    Keep Current Inputs (Duplicate Draft)
-                  </h4>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-300">
+                      Keep Current Inputs (Duplicate Draft)
+                    </h4>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 dark:bg-indigo-900/80 dark:text-indigo-200">
+                      Copy Details
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
                     Spawns a new document copy keeping all entered client details, addresses, and court facts intact. Great for related parties or similar case filings.
                   </p>
                 </div>
@@ -3699,27 +3762,32 @@ Always include: one to fill client details, one to audit compliance, one templat
               <button
                 type="button"
                 onClick={() => handleCreateNewDraft('fresh')}
-                className="w-full text-left p-3.5 bg-slate-50 hover:bg-purple-50 dark:bg-slate-950 dark:hover:bg-purple-950/40 border border-slate-200 hover:border-purple-500 dark:border-slate-800 dark:hover:border-purple-600/80 rounded-xl transition group flex items-start gap-3 cursor-pointer"
+                className="w-full text-left p-4 bg-slate-50 hover:bg-purple-50/70 dark:bg-slate-800/60 dark:hover:bg-purple-950/40 border-2 border-purple-200 hover:border-purple-500 dark:border-slate-700 dark:hover:border-purple-500 rounded-xl transition group flex items-start gap-3.5 cursor-pointer shadow-sm"
               >
-                <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-700/60 flex items-center justify-center text-purple-600 dark:text-purple-300 shrink-0 group-hover:bg-purple-600 group-hover:text-white transition">
-                  <Sparkles className="w-4 h-4" />
+                <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-900/60 border border-purple-300 dark:border-purple-700 flex items-center justify-center text-purple-700 dark:text-purple-300 shrink-0 group-hover:bg-purple-600 group-hover:text-white transition">
+                  <Sparkles className="w-5 h-5" />
                 </div>
-                <div className="space-y-0.5">
-                  <h4 className="text-xs font-bold text-slate-200 group-hover:text-white">
-                    Start Fresh Draft (Reset Inputs)
-                  </h4>
-                  <p className="text-[11px] text-slate-400 leading-snug">
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-300">
+                      Start Fresh Draft (Reset Inputs)
+                    </h4>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 dark:bg-purple-900/80 dark:text-purple-200">
+                      New Client
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
                     Resets all client form inputs back to template defaults to start drafting for a brand new client case.
                   </p>
                 </div>
               </button>
             </div>
 
-            <div className="flex justify-end pt-2 border-t border-slate-800">
+            <div className="flex justify-end pt-3 border-t border-slate-200 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setIsNewDraftModalOpen(false)}
-                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer"
               >
                 Cancel
               </button>

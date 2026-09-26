@@ -22,6 +22,14 @@ export interface StandardClause {
   contentMr?: string;
 }
 
+export interface TemplateReferencePdf {
+  fileName: string;
+  fileSize: number;
+  mimeType?: string;
+  uploadedAt?: string;
+  dataBase64?: string;
+}
+
 export interface LegalTemplate {
   id: string;
   title: string;
@@ -40,6 +48,7 @@ export interface LegalTemplate {
   isBuiltIn?: boolean;        // true = ships with app, protected from deletion
   createdAt?: string;         // ISO timestamp, present on custom templates
   updatedAt?: string;
+  referencePdf?: TemplateReferencePdf;
 }
 
 export interface DocumentDraft {

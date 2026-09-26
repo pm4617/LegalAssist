@@ -508,8 +508,40 @@ RULE 2: STRUCTURAL DOCUMENT EDITING RULES (apply ONLY when user explicitly asks 
 [REVISED_DOCUMENT_END]
 5. Use formal Maharashtra court Marathi terminology for Marathi documents.`;
 
+      // Check for associated reference PDF attachment for this template
+      let referencePdfPart: any = null;
+      let referencePdfInstruction = '';
+      if (context.templateId) {
+        try {
+          const pdfData = await templateService.getTemplatePdf(context.templateId);
+          if (pdfData?.pdfBuffer) {
+            referencePdfPart = {
+              inlineData: {
+                mimeType: 'application/pdf',
+                data: pdfData.pdfBuffer.toString('base64'),
+              },
+            };
+            referencePdfInstruction = `\n\n=======================================================
+OFFICIAL REFERENCE COURT PLEADING DOCUMENT (ATTACHED PDF: "${pdfData.fileName}"):
+The user has attached the official reference court pleading in PDF.
+You MUST refer to this attached reference PDF to:
+1. Maintain the final document format as in the reference document.
+=======================================================`;
+          }
+        } catch (err: any) {
+          console.warn('⚠️ Could not load template reference PDF for Copilot chat:', err.message);
+        }
+      }
+
+      const promptText = `${systemPrompt}${referencePdfInstruction}\n\nInstruction: ${message}`;
+      const userParts: any[] = [];
+      if (referencePdfPart) {
+        userParts.push(referencePdfPart);
+      }
+      userParts.push({ text: promptText });
+
       const text = await this.generateWithGeminiFallback(client, [
-        { role: 'user', parts: [{ text: `${systemPrompt}\n\nInstruction: ${message}` }] }
+        { role: 'user', parts: userParts }
       ]);
 
       if (text) {
@@ -911,11 +943,29 @@ How would you like me to update your draft?`;
     templateId?: string,
     templateTitle?: string,
     templateFields?: any[],
-    systemPromptOverride?: string
+    systemPromptOverride?: string,
+    referencePdfAttachment?: { fileName: string; dataBase64: string }
   ): Promise<ExtractedDetailsResult> {
     const client = this.getClient(apiKey);
     let activeTmpl = templateId ? templateService.getTemplate(templateId) : undefined;
     const targetFields = templateFields || activeTmpl?.fields || [];
+
+    // Auto-load reference court PDF for this template if not provided explicitly
+    let pdfAttachment = referencePdfAttachment;
+    if (!pdfAttachment && templateId) {
+      try {
+        const pdfData = await templateService.getTemplatePdf(templateId);
+        if (pdfData?.pdfBuffer) {
+          pdfAttachment = {
+            fileName: pdfData.fileName,
+            dataBase64: pdfData.pdfBuffer.toString('base64'),
+          };
+          console.log(`📎 [Gemini AI Pleading] Loaded reference court PDF "${pdfData.fileName}" (${pdfData.fileSize} bytes) for template "${templateId}".`);
+        }
+      } catch (err: any) {
+        console.warn('⚠️ Could not load template reference PDF for fact extraction:', err.message);
+      }
+    }
 
     if (client) {
       try {
@@ -947,6 +997,17 @@ How would you like me to update your draft?`;
 }`;
         }
 
+        const referenceNotice = pdfAttachment
+          ? `\n\n=======================================================
+CRITICAL COURT REFERENCE PLEADING ATTACHED (PDF: "${pdfAttachment.fileName}"):
+The advocate has provided an official court reference pleading document in PDF.
+You MUST examine and cross-reference the attached court reference PDF carefully:
+1. Examine its legal framing, terminology (Marathi/English), prayer clauses, statutory sections, and party descriptions.
+2. Ensure the extracted facts, legal terms, and narrative correspond to the authentic court pleading standards exemplified in this reference document.
+3. Extract any specific statutory sections, case numbers, or legal phrasing demonstrated in the reference document.
+=======================================================`
+          : '';
+
         const defaultPrompt = `You are an expert AI Legal Drafter for Maharashtra Courts. Extract all client, case, party, transaction, and court details from the following lawyer's questionnaire / narrative prompt into a JSON object matching this schema:
 ${schemaPrompt}
 
@@ -976,8 +1037,19 @@ Notes / Prompt:
 ${rawNotes}`
           : defaultPrompt;
 
+        const userParts: any[] = [];
+        if (pdfAttachment) {
+          userParts.push({
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: pdfAttachment.dataBase64,
+            }
+          });
+        }
+        userParts.push({ text: prompt + referenceNotice });
+
         const textResp = await this.generateWithGeminiFallback(client,
-          [{ role: 'user', parts: [{ text: prompt }] }],
+          [{ role: 'user', parts: userParts }],
           { responseMimeType: 'application/json' }
         );
 
