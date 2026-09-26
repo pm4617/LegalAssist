@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
+import { pathToFileURL } from 'url';
+import PDFDocument from 'pdfkit';
 import {
   Document, Paragraph, TextRun, AlignmentType, LineRuleType, Packer, PageBreak,
   Table, TableRow, TableCell, BorderStyle, WidthType, VerticalAlign,
@@ -52,6 +54,31 @@ function unescapeHtml(str: string): string {
     .replace(/&#39;/gi, "'")
     .replace(/&apos;/gi, "'")
     .replace(/&#8203;/gi, '');
+}
+
+function escapeHtml(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function extractTableData(tableHtml: string): string[][] {
+  const rows: string[][] = [];
+  const trMatches = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  for (const tr of trMatches) {
+    const cells: string[] = [];
+    const cellMatches = tr.match(/<(td|th)[\s\S]*?<\/\1>/gi) || [];
+    for (const cell of cellMatches) {
+      const text = unescapeHtml(cell.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').trim());
+      cells.push(text);
+    }
+    if (cells.length > 0) rows.push(cells);
+  }
+  return rows;
 }
 
 function getParagraphAlignment(blockHtml: string, rawText: string): any {
@@ -677,24 +704,30 @@ export class ExportService {
 
   /**
    * Generates a court-standard PDF buffer using the local headless browser engine (Edge/Chrome/Chromium)
-   * with full Devanagari ligatures and court margins.
+   * with full Devanagari ligatures and court margins, with automatic fallback to pure Node PDFKit.
    */
   async generatePdf(options: PdfExportOptions): Promise<Buffer> {
     const browserPath = this.findBrowserPath();
     if (!browserPath) {
-      throw new Error('No compatible browser (Edge/Chrome/Chromium) found for PDF export.');
+      console.warn('⚠️ No compatible browser found for PDF export. Using pure Node PDFKit fallback.');
+      return this.generatePdfFallback(options);
     }
 
     const pageSize = options.paperSize === 'a4' ? 'A4 portrait' : 'legal portrait';
     const tempDir = os.tmpdir();
+    const tempProfileDir = path.join(tempDir, `browser_profile_${Date.now()}_${Math.random().toString(36).substring(7)}`);
     const tempHtmlPath = path.join(tempDir, `court_doc_${Date.now()}_${Math.random().toString(36).substring(7)}.html`);
     const tempPdfPath = path.join(tempDir, `court_doc_${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
+
+    try {
+      fs.mkdirSync(tempProfileDir, { recursive: true });
+    } catch {}
 
     const fullHtml = `<!DOCTYPE html>
 <html lang="mr">
 <head>
   <meta charset="UTF-8">
-  <title>${options.title || 'Legal Document'}</title>
+  <title>${escapeHtml(options.title || 'Legal Document')}</title>
   <style>
     @page {
       size: ${pageSize};
@@ -746,38 +779,194 @@ export class ExportService {
 
     fs.writeFileSync(tempHtmlPath, fullHtml, 'utf8');
 
-    return new Promise<Buffer>((resolve, reject) => {
-      const args = [
-        '--headless=new',
-        '--disable-gpu',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--no-pdf-header-footer',
-        `--print-to-pdf=${tempPdfPath}`,
-        tempHtmlPath
-      ];
+    const cleanup = () => {
+      try { if (fs.existsSync(tempHtmlPath)) fs.unlinkSync(tempHtmlPath); } catch {}
+      try { if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath); } catch {}
+      try { if (fs.existsSync(tempProfileDir)) fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
+    };
 
-      execFile(browserPath, args, { timeout: 30000 }, (err) => {
-        try { fs.unlinkSync(tempHtmlPath); } catch {}
-        if (err) {
-          try { fs.unlinkSync(tempPdfPath); } catch {}
-          return reject(err);
-        }
-        try {
-          if (!fs.existsSync(tempPdfPath)) {
-            return reject(new Error('PDF output file was not generated'));
+    const args = [
+      '--headless=new',
+      '--disable-gpu',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--no-pdf-header-footer',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--run-all-compositor-stages-before-draw',
+      `--user-data-dir=${tempProfileDir}`,
+      `--print-to-pdf=${tempPdfPath}`,
+      pathToFileURL(tempHtmlPath).href
+    ];
+
+    try {
+      const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
+        execFile(browserPath, args, { timeout: 15000 }, (err) => {
+          if (err) return reject(err);
+          try {
+            if (!fs.existsSync(tempPdfPath)) {
+              return reject(new Error('PDF output file was not generated'));
+            }
+            const buffer = fs.readFileSync(tempPdfPath);
+            if (!buffer || buffer.length === 0) {
+              return reject(new Error('Generated PDF file was empty'));
+            }
+            resolve(buffer);
+          } catch (readErr) {
+            reject(readErr);
           }
-          const pdfBuffer = fs.readFileSync(tempPdfPath);
-          try { fs.unlinkSync(tempPdfPath); } catch {}
-          resolve(pdfBuffer);
-        } catch (readErr) {
-          reject(readErr);
-        }
+        });
       });
+      cleanup();
+      return pdfBuffer;
+    } catch (browserErr: any) {
+      cleanup();
+      console.warn('⚠️ Headless browser PDF generation failed or timed out:', browserErr?.message, '- falling back to pure Node PDFKit generator.');
+      return await this.generatePdfFallback(options);
+    }
+  }
+
+  /**
+   * Pure Node.js fallback PDF generator using PDFKit when no local browser is installed or available.
+   * Produces a court-standard Legal or A4 PDF with 1.5" left margin for binding.
+   */
+  async generatePdfFallback(options: PdfExportOptions): Promise<Buffer> {
+    return new Promise<Buffer>((resolve, reject) => {
+      try {
+        const isLegal = options.paperSize !== 'a4';
+        const doc = new PDFDocument({
+          size: isLegal ? 'LEGAL' : 'A4',
+          margins: {
+            top: 86.4,    // 1.2 in
+            bottom: 72,   // 1.0 in
+            left: 108,    // 1.5 in (Court standard left binding space)
+            right: 72     // 1.0 in
+          },
+          autoFirstPage: true,
+          info: {
+            Title: options.title || 'Legal Document',
+            Author: 'LegalAssist AI'
+          }
+        });
+
+        const fontPaths = [
+          'C:\\Windows\\Fonts\\arial.ttf',
+          '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+          '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+          '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+        ];
+        let fontLoaded = false;
+        for (const fp of fontPaths) {
+          if (fs.existsSync(fp)) {
+            try {
+              doc.font(fp);
+              fontLoaded = true;
+              break;
+            } catch {}
+          }
+        }
+        if (!fontLoaded) {
+          doc.font('Helvetica');
+        }
+
+        const chunks: Buffer[] = [];
+        doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+        doc.on('error', (err: Error) => reject(err));
+
+        const blocks = extractBlocks(options.content || '');
+
+        for (const block of blocks) {
+          if (block.isPageBreak) {
+            doc.addPage();
+            continue;
+          }
+
+          if (block.isTable && block.tableHtml) {
+            const rows = extractTableData(block.tableHtml);
+            if (rows.length > 0) {
+              const numCols = Math.max(...rows.map(r => r.length), 1);
+              const pageWidth = isLegal ? 612 : 595.28;
+              const usableWidth = pageWidth - 108 - 72;
+              const colWidth = usableWidth / numCols;
+
+              doc.moveDown(0.5);
+              for (const row of rows) {
+                const rowY = doc.y;
+                if (rowY > (isLegal ? 920 : 760)) {
+                  doc.addPage();
+                }
+                const startY = doc.y;
+                let maxHeight = 16;
+                for (let c = 0; c < row.length; c++) {
+                  const cellText = row[c] || '';
+                  const cellX = 108 + c * colWidth;
+                  const textHeight = doc.heightOfString(cellText, { width: colWidth - 8 });
+                  if (textHeight + 6 > maxHeight) maxHeight = textHeight + 6;
+                  doc.text(cellText, cellX + 4, startY + 4, {
+                    width: colWidth - 8,
+                    align: 'left',
+                    lineBreak: true
+                  });
+                }
+                doc.rect(108, startY, usableWidth, maxHeight).strokeColor('#999999').stroke();
+                doc.y = startY + maxHeight;
+              }
+              doc.moveDown(0.5);
+            }
+            continue;
+          }
+
+          const rawText = unescapeHtml(
+            (block.html || '')
+              .replace(/<br\s*\/?>/gi, '\n')
+              .replace(/<\/p>/gi, '\n')
+              .replace(/<[^>]+>/g, '')
+          ).trim();
+
+          if (!rawText) continue;
+
+          let align: 'left' | 'center' | 'right' | 'justify' = 'justify';
+          if (block.alignment === 'center' || block.isHeading) {
+            align = 'center';
+          } else if (block.alignment === 'right') {
+            align = 'right';
+          } else if (block.alignment === 'left') {
+            align = 'left';
+          }
+
+          const fontSize = block.isHeading ? 14 : 12;
+          const isCentered = align === 'center' || align === 'right';
+          const textIndent = isCentered ? 0 : 25;
+
+          doc.fontSize(fontSize);
+          doc.text(rawText, {
+            align,
+            indent: textIndent,
+            lineGap: 4
+          });
+          doc.moveDown(block.isHeading ? 0.6 : 0.4);
+        }
+
+        doc.end();
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
   private findBrowserPath(): string | null {
+    if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
+      return process.env.CHROME_PATH;
+    }
+    if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+      return process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
     const winCandidates = [
       'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
       'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -786,6 +975,14 @@ export class ExportService {
       ...(process.env.LOCALAPPDATA ? [
         path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
         path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      ] : []),
+      ...(process.env.PROGRAMFILES ? [
+        path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      ] : []),
+      ...(process.env['PROGRAMFILES(X86)'] ? [
+        path.join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
       ] : [])
     ];
 

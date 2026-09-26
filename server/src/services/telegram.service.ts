@@ -766,13 +766,14 @@ export class TelegramBotService {
         console.error('Failed to save Telegram draft to store:', saveErr);
       }
 
-      const safeBaseName = `${(template.titleMr || template.title).replace(/[^a-zA-Z0-9_\u0900-\u097F\-]/g, '_')}_Draft`;
-      const docxFileName = `${safeBaseName}.docx`;
-      const pdfFileName = `${safeBaseName}.pdf`;
+      const safeId = (template.id || 'document').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const timestamp = Date.now().toString().slice(-6);
+      const docxFileName = `Draft_${safeId}_${timestamp}.docx`;
+      const pdfFileName = `Draft_${safeId}_${timestamp}.pdf`;
 
       // 2. Generate DOCX Buffer
       const docxBuffer = await exportService.generateDocx({
-        title: template.title,
+        title: template.titleMr || template.title,
         content: mergedHtml,
         paperSize: 'legal'
       });
@@ -782,14 +783,15 @@ export class TelegramBotService {
         chatId,
         docxBuffer,
         docxFileName,
-        `📄 <b>Word Document (.docx)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.title)}\n• <b>पद्धत:</b> ${escapeHtml(modeLabel)}\n• <b>कागद आकार:</b> Legal (8.5" x 14")`,
+        `📄 <b>Word Document (.docx)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.titleMr || template.title)}\n• <b>पद्धत:</b> ${escapeHtml(modeLabel)}\n• <b>कागद आकार:</b> Legal (8.5" x 14")`,
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       );
 
       // 4. Generate & Upload PDF Buffer
+      let pdfSent = false;
       try {
         const pdfBuffer = await exportService.generatePdf({
-          title: template.title,
+          title: template.titleMr || template.title,
           content: mergedHtml,
           paperSize: 'legal'
         });
@@ -798,17 +800,18 @@ export class TelegramBotService {
           chatId,
           pdfBuffer,
           pdfFileName,
-          `📕 <b>Court Ready PDF (.pdf)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.title)}\n• <b>कागद आकार:</b> Legal (Court Standard Margins)`,
+          `📕 <b>Court Ready PDF (.pdf)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.titleMr || template.title)}\n• <b>कागद आकार:</b> Legal (Court Standard Margins)`,
           'application/pdf'
         );
+        pdfSent = true;
       } catch (pdfErr: any) {
-        console.warn('Telegram PDF export failed or browser unavailable:', pdfErr?.message);
-        await this.sendMessage(chatId, `ℹ️ <i>PDF तयार करता आले नाही, परंतु वरील Word (.docx) फाइल यशस्वीरित्या पाठवली आहे.</i>`);
+        console.warn('Telegram PDF export or send failed:', pdfErr?.message);
+        await this.sendMessage(chatId, `ℹ️ <i>PDF तयार किंवा पाठवताना अडचण आली, परंतु वरील Word (.docx) फाइल यशस्वीरित्या पाठवली आहे.</i>`);
       }
 
       await this.sendMessage(
         chatId,
-        `✅ <b>मसुदा यशस्वीरित्या पूर्ण झाला!</b>\n\n• दोन्ही फाइल्स (.docx व .pdf) वर डाउनलोडसाठी उपलब्ध आहेत.\n• हा मसुदा तुमच्या LegalAssist वेब डॅशबोर्डमध्येही सेव्ह झाला आहे.\n\n🔄 नवीन मसुदा तयार करण्यासाठी /start किंवा /new दाबा.`
+        `✅ <b>मसुदा यशस्वीरित्या पूर्ण झाला!</b>\n\n• ${pdfSent ? 'दोन्ही फाइल्स (.docx व .pdf) वर डाउनलोडसाठी उपलब्ध आहेत.' : 'Word (.docx) फाइल वर डाउनलोडसाठी उपलब्ध आहे.'}\n• हा मसुदा तुमच्या LegalAssist वेब डॅशबोर्डमध्येही सेव्ह झाला आहे.\n\n🔄 नवीन मसुदा तयार करण्यासाठी /start किंवा /new दाबा.`
       );
 
       this.sessions.delete(chatId);
@@ -888,6 +891,7 @@ export class TelegramBotService {
 
   public async sendDocument(chatId: number, buffer: Buffer, filename: string, caption?: string, mimeType?: string) {
     if (!this.botToken) return;
+    const sanitizedFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
     try {
       const formData = new FormData();
       formData.append('chat_id', String(chatId));
@@ -896,9 +900,9 @@ export class TelegramBotService {
         formData.append('parse_mode', 'HTML');
       }
 
-      const contentType = mimeType || (filename.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      const contentType = mimeType || (sanitizedFilename.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       const blob = new Blob([buffer], { type: contentType });
-      formData.append('document', blob, filename);
+      formData.append('document', blob, sanitizedFilename);
 
       const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
         method: 'POST',
@@ -907,9 +911,24 @@ export class TelegramBotService {
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
         console.error('Telegram sendDocument HTTP Error:', res.status, errJson);
+        // Fallback: If Telegram rejected due to HTML parse error in caption, retry with plain text caption
+        if (res.status === 400 && caption) {
+          const retryFormData = new FormData();
+          retryFormData.append('chat_id', String(chatId));
+          retryFormData.append('caption', caption.replace(/<[^>]*>/g, ''));
+          const retryBlob = new Blob([buffer], { type: contentType });
+          retryFormData.append('document', retryBlob, sanitizedFilename);
+          const retryRes = await fetch(`https://api.telegram.org/bot${this.botToken}/sendDocument`, {
+            method: 'POST',
+            body: retryFormData
+          });
+          if (retryRes.ok) return;
+        }
+        throw new Error(`Telegram sendDocument failed with status ${res.status}: ${JSON.stringify(errJson)}`);
       }
     } catch (err) {
       console.error('Failed to send Telegram document:', err);
+      throw err;
     }
   }
 }
