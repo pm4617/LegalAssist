@@ -29,24 +29,41 @@ class TemplateStore {
     if (process.env.VERCEL) {
       return path.join(os.tmpdir(), 'custom-templates.json');
     }
+    const serverData = path.join(process.cwd(), 'server', 'data', 'custom-templates.json');
+    if (fs.existsSync(serverData) || fs.existsSync(path.dirname(serverData))) {
+      return serverData;
+    }
     const localData = path.join(process.cwd(), 'data', 'custom-templates.json');
-    if (fs.existsSync(path.dirname(localData))) {
+    if (fs.existsSync(localData) || fs.existsSync(path.dirname(localData))) {
       return localData;
     }
     return path.join(__dirname, '../../data/custom-templates.json');
   }
 
   private ensureDataFile(): string {
-    let targetFile = this.getStoragePath();
+    const targetFile = this.getStoragePath();
+    const seedCandidates = [
+      path.join(process.cwd(), 'server', 'data', 'custom-templates.json'),
+      path.join(process.cwd(), 'data', 'custom-templates.json'),
+      path.join(__dirname, '../../data/custom-templates.json'),
+      path.join(__dirname, '../data/custom-templates.json'),
+    ];
+
     try {
       const dir = path.dirname(targetFile);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       if (!fs.existsSync(targetFile)) {
-        // Try reading seed data from bundled data dir first if available
-        const seedFile = path.join(process.cwd(), 'data', 'custom-templates.json');
         let initialData = '[]';
-        if (fs.existsSync(seedFile)) {
-          try { initialData = fs.readFileSync(seedFile, 'utf8'); } catch {}
+        for (const cand of seedCandidates) {
+          if (fs.existsSync(cand)) {
+            try {
+              const content = fs.readFileSync(cand, 'utf8');
+              if (content.trim() && content.trim() !== '[]') {
+                initialData = content;
+                break;
+              }
+            } catch {}
+          }
         }
         fs.writeFileSync(targetFile, initialData, 'utf8');
       }
@@ -56,10 +73,17 @@ class TemplateStore {
       const tmpFile = path.join(os.tmpdir(), 'custom-templates.json');
       try {
         if (!fs.existsSync(tmpFile)) {
-          const seedFile = path.join(process.cwd(), 'data', 'custom-templates.json');
           let initialData = '[]';
-          if (fs.existsSync(seedFile)) {
-            try { initialData = fs.readFileSync(seedFile, 'utf8'); } catch {}
+          for (const cand of seedCandidates) {
+            if (fs.existsSync(cand)) {
+              try {
+                const content = fs.readFileSync(cand, 'utf8');
+                if (content.trim() && content.trim() !== '[]') {
+                  initialData = content;
+                  break;
+                }
+              } catch {}
+            }
           }
           fs.writeFileSync(tmpFile, initialData, 'utf8');
         }
@@ -78,25 +102,38 @@ class TemplateStore {
       return this.inMemoryCache;
     }
 
+    const seedCandidates = [
+      this.getStoragePath(),
+      path.join(process.cwd(), 'server', 'data', 'custom-templates.json'),
+      path.join(process.cwd(), 'data', 'custom-templates.json'),
+      path.join(__dirname, '../../data/custom-templates.json'),
+    ];
+
     const file = this.ensureDataFile();
     try {
       if (fs.existsSync(file)) {
         const raw = fs.readFileSync(file, 'utf8');
         const parsed = JSON.parse(raw) as LegalTemplate[];
-        this.inMemoryCache = parsed;
-        return parsed;
-      }
-    } catch {
-      try {
-        const seedFile = path.join(process.cwd(), 'data', 'custom-templates.json');
-        if (fs.existsSync(seedFile)) {
-          const raw = fs.readFileSync(seedFile, 'utf8');
-          const parsed = JSON.parse(raw) as LegalTemplate[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
           this.inMemoryCache = parsed;
           return parsed;
         }
+      }
+    } catch {}
+
+    for (const cand of seedCandidates) {
+      try {
+        if (fs.existsSync(cand)) {
+          const raw = fs.readFileSync(cand, 'utf8');
+          const parsed = JSON.parse(raw) as LegalTemplate[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            this.inMemoryCache = parsed;
+            return parsed;
+          }
+        }
       } catch {}
     }
+
     return this.inMemoryCache || [];
   }
 

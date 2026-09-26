@@ -23,7 +23,15 @@ class DraftStore {
     if (process.env.VERCEL) {
       return path.join(os.tmpdir(), 'custom-drafts.json');
     }
-    return path.join(process.cwd(), 'data', 'custom-drafts.json');
+    const serverData = path.join(process.cwd(), 'server', 'data', 'custom-drafts.json');
+    if (fs.existsSync(serverData) || fs.existsSync(path.dirname(serverData))) {
+      return serverData;
+    }
+    const localData = path.join(process.cwd(), 'data', 'custom-drafts.json');
+    if (fs.existsSync(localData) || fs.existsSync(path.dirname(localData))) {
+      return localData;
+    }
+    return path.join(__dirname, '../../data/custom-drafts.json');
   }
 
   private ensureDataFile(): string {

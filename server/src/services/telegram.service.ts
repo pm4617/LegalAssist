@@ -44,19 +44,36 @@ export class TelegramBotService {
     if (process.env.VERCEL) {
       return path.join(os.tmpdir(), 'telegram-config.json');
     }
-    return path.join(process.cwd(), 'data', 'telegram-config.json');
+    const serverData = path.join(process.cwd(), 'server', 'data', 'telegram-config.json');
+    if (fs.existsSync(serverData) || fs.existsSync(path.dirname(serverData))) {
+      return serverData;
+    }
+    const localData = path.join(process.cwd(), 'data', 'telegram-config.json');
+    if (fs.existsSync(localData) || fs.existsSync(path.dirname(localData))) {
+      return localData;
+    }
+    return path.join(__dirname, '../../data/telegram-config.json');
   }
 
   private loadSavedToken(): string {
     if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN.trim();
-    try {
-      const targetFile = this.getStoragePath();
-      if (fs.existsSync(targetFile)) {
-        const raw = fs.readFileSync(targetFile, 'utf8');
-        const parsed = JSON.parse(raw);
-        return (parsed.token || '').trim();
-      }
-    } catch {}
+    const candidates = [
+      this.getStoragePath(),
+      path.join(process.cwd(), 'server', 'data', 'telegram-config.json'),
+      path.join(process.cwd(), 'data', 'telegram-config.json'),
+      path.join(__dirname, '../../data/telegram-config.json'),
+    ];
+    for (const targetFile of candidates) {
+      try {
+        if (fs.existsSync(targetFile)) {
+          const raw = fs.readFileSync(targetFile, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.token === 'string' && parsed.token.trim()) {
+            return parsed.token.trim();
+          }
+        }
+      } catch {}
+    }
     return '';
   }
 
@@ -208,14 +225,23 @@ export class TelegramBotService {
       }
 
       if (trimmed === '/help') {
-        await this.sendMessage(chatId, `🏛️ <b>LegalAssist Telegram Bot Help</b>\n\n• /start or /new - मसुदा निवडा (Select template & choose format)\n• /skip - Skip optional question in questionnaire\n• /cancel - Cancel current session\n• /help - View commands help\n\n💡 <i>तुम्ही केसची माहिती थेट कथन (Narration) स्वरूपात पाठवून त्वरित .docx आणि .pdf मिळवू शकता!</i>`);
+        await this.sendMessage(
+          chatId,
+          `🏛️ <b>LegalAssist Telegram Bot Help</b>\n\n` +
+          `• /start, /new किंवा /templates - सर्व मसुदे पहा व निवडा (Select template & choose format)\n` +
+          `• ⭐ चिन्हांकित मसुदे - तुमचे स्वतःचे Custom Templates\n` +
+          `• /skip - Skip optional question in questionnaire\n` +
+          `• /cancel - Cancel current session\n` +
+          `• /help - View commands help\n\n` +
+          `💡 <i>तुम्ही केसची माहिती थेट कथन (Narration) स्वरूपात पाठवून त्वरित .docx आणि .pdf मिळवू शकता!</i>`
+        );
         return;
       }
 
       const session = this.sessions.get(chatId);
 
       // Start/Greeting check: only trigger if explicitly typed or when not actively in narration
-      const isStartCmd = trimmed === '/start' || trimmed === '/new' || trimmed === '/restart';
+      const isStartCmd = /^\/(?:start|new|restart|templates?|list)$/i.test(trimmed);
       const isGreeting = /^(?:hello|hi|hey|namaste|नमस्कार|प्रणाम)$/i.test(lower);
 
       if (isStartCmd || (!session && isGreeting)) {
@@ -271,17 +297,19 @@ export class TelegramBotService {
       if (data.startsWith('tmpl_')) {
         const templateId = data.replace('tmpl_', '');
         await this.handleTemplateSelected(chatId, templateId);
-      } else if (data.startsWith('mode_wizard_')) {
-        const templateId = data.replace('mode_wizard_', '');
+      } else if (data.startsWith('mode_wizard_') || data === 'mode_wizard') {
+        const session = this.sessions.get(chatId);
+        const templateId = data.startsWith('mode_wizard_') ? data.replace('mode_wizard_', '') : (session?.templateId || '');
         await this.startWizardForTemplate(chatId, templateId);
-      } else if (data.startsWith('mode_narration_')) {
-        const templateId = data.replace('mode_narration_', '');
+      } else if (data.startsWith('mode_narration_') || data === 'mode_narration') {
+        const session = this.sessions.get(chatId);
+        const templateId = data.startsWith('mode_narration_') ? data.replace('mode_narration_', '') : (session?.templateId || '');
         await this.startNarrationMode(chatId, templateId);
       } else if (data.startsWith('ans_')) {
         let value = data.replace('ans_', '');
         const session = this.sessions.get(chatId);
         if (session && session.state === 'IN_WIZARD' && session.templateId) {
-          const template = templateService.getTemplate(session.templateId);
+          const template = await templateService.getTemplateAsync(session.templateId);
           if (template) {
             const fields = this.getEffectiveFields(template);
             const field = fields[session.currentFieldIndex];
@@ -331,8 +359,11 @@ export class TelegramBotService {
 
     // Template buttons (one per row)
     pageTemplates.forEach((t) => {
-      // Truncate label so button text stays readable; callback_data must be ≤64 bytes
-      const label = `📜 ${t.titleMr || t.title}`.substring(0, 60);
+      // Mark custom templates with ⭐ for clear visual identification
+      const isCustom = !t.isBuiltIn;
+      const prefix = isCustom ? '⭐ ' : '📜 ';
+      const titleText = t.titleMr || t.title;
+      const label = `${prefix}${titleText}`.substring(0, 60);
       const cbData = `tmpl_${t.id}`.substring(0, 64);
       keyboard.push([{ text: label, callback_data: cbData }]);
     });
@@ -351,21 +382,27 @@ export class TelegramBotService {
   }
 
   private async handleStart(chatId: number, page: number = 0) {
-    let templates = templateService.getAllTemplates();
+    let templates = await templateService.getAllTemplatesAsync();
     if (!templates || templates.length === 0) {
       await this.sendMessage(chatId, '⚠️ No legal templates found in system.');
       return;
     }
 
-    // Sort templates by updatedAt descending so newly created templates appear first
+    // Prioritize custom templates first, then sort by latest updatedAt or createdAt
     templates = [...templates].sort((a, b) => {
-      const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-      const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-      return dateB - dateA;
+      const isCustomA = !a.isBuiltIn ? 1 : 0;
+      const isCustomB = !b.isBuiltIn ? 1 : 0;
+      if (isCustomA !== isCustomB) {
+        return isCustomB - isCustomA;
+      }
+      const timeA = a.updatedAt ? new Date(a.updatedAt).getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const timeB = b.updatedAt ? new Date(b.updatedAt).getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      return timeB - timeA;
     });
 
     const inlineKeyboard = this.buildTemplatePageKeyboard(templates, page);
     const totalPages = Math.ceil(templates.length / TelegramBotService.PAGE_SIZE);
+    const customCount = templates.filter((t) => !t.isBuiltIn).length;
     const pageInfo = totalPages > 1 ? ` (Page ${page + 1} of ${totalPages})` : '';
 
     this.sessions.set(chatId, {
@@ -376,15 +413,17 @@ export class TelegramBotService {
       updatedAt: Date.now()
     });
 
+    const customHint = customCount > 0 ? `\n\n⭐ <i>चिन्हांकित मसुदे तुमचे स्वतःचे Custom Templates आहेत.</i>` : '';
+
     await this.sendMessageWithKeyboard(
       chatId,
-      `🏛️ <b>Welcome to LegalAssist Automated Legal Drafter!</b>\n\nPlease select a Legal Template to start your automated step-by-step drafting session${pageInfo}:`,
+      `🏛️ <b>Welcome to LegalAssist Automated Legal Drafter!</b>\n\nPlease select a Legal Template to start your automated drafting session${pageInfo}:${customHint}`,
       { inline_keyboard: inlineKeyboard }
     );
   }
 
   private async startWizardForTemplate(chatId: number, templateId: string) {
-    const template = templateService.getTemplate(templateId);
+    const template = await templateService.getTemplateAsync(templateId);
     if (!template) {
       await this.sendMessage(chatId, '❌ Selected template not found. Type /start to select again.');
       return;
@@ -458,7 +497,7 @@ export class TelegramBotService {
 
   private async sendCurrentQuestion(chatId: number, session: TelegramSession) {
     if (!session.templateId) return;
-    const template = templateService.getTemplate(session.templateId);
+    const template = await templateService.getTemplateAsync(session.templateId);
     if (!template) return;
 
     const fields = this.getEffectiveFields(template);
@@ -519,7 +558,7 @@ export class TelegramBotService {
 
   private async processAnswer(chatId: number, session: TelegramSession, value: string) {
     if (!session.templateId) return;
-    const template = templateService.getTemplate(session.templateId);
+    const template = await templateService.getTemplateAsync(session.templateId);
     if (!template) return;
 
     const fields = this.getEffectiveFields(template);
@@ -551,7 +590,7 @@ export class TelegramBotService {
   }
 
   private async handleTemplateSelected(chatId: number, templateId: string) {
-    const template = templateService.getTemplate(templateId);
+    const template = await templateService.getTemplateAsync(templateId);
     if (!template) {
       await this.sendMessage(chatId, '❌ निवडलेला मसुदा सापडला नाही. Type /start to select again.');
       return;
@@ -567,19 +606,21 @@ export class TelegramBotService {
     };
     this.sessions.set(chatId, session);
 
+    const isCustom = !template.isBuiltIn;
+    const prefix = isCustom ? '⭐ ' : '📜 ';
     const safeTitle = escapeHtml(template.title);
     const safeTitleMr = template.titleMr ? `\n<i>(${escapeHtml(template.titleMr)})</i>` : '';
 
-    const text = `📜 <b>निवडलेला मसुदा / Selected Template:</b>\n<b>${safeTitle}</b>${safeTitleMr}\n\n` +
+    const text = `${prefix}<b>निवडलेला मसुदा / Selected Template:</b>\n<b>${safeTitle}</b>${safeTitleMr}\n\n` +
       `<b>तुम्हाला माहिती कशी भरायची आहे? खालील पर्याय निवडा:</b>\n` +
       `<i>(Choose how you want to input case particulars):</i>`;
 
     const inlineKeyboard = [
       [
-        { text: '📝 प्रश्नावली स्वरूप (Questionnaire / Step-by-Step)', callback_data: `mode_wizard_${templateId}` }
+        { text: '📝 प्रश्नावली स्वरूप (Questionnaire / Step-by-Step)', callback_data: `mode_wizard_${templateId}`.substring(0, 64) }
       ],
       [
-        { text: '✍️ कथन / तपशील टाका (Direct Narration / Case Details)', callback_data: `mode_narration_${templateId}` }
+        { text: '✍️ कथन / तपशील टाका (Direct Narration / Case Details)', callback_data: `mode_narration_${templateId}`.substring(0, 64) }
       ],
       [
         { text: '◀️ मसुदे यादी (Back to Templates)', callback_data: 'pg_0' },
@@ -591,7 +632,7 @@ export class TelegramBotService {
   }
 
   private async startNarrationMode(chatId: number, templateId: string) {
-    const template = templateService.getTemplate(templateId);
+    const template = await templateService.getTemplateAsync(templateId);
     if (!template) {
       await this.sendMessage(chatId, '❌ Template not found. Type /start to select again.');
       return;
@@ -607,11 +648,13 @@ export class TelegramBotService {
     };
     this.sessions.set(chatId, session);
 
+    const isCustom = !template.isBuiltIn;
+    const prefix = isCustom ? '⭐ ' : '📜 ';
     const safeTitle = escapeHtml(template.title);
     const safeTitleMr = template.titleMr ? ` (${escapeHtml(template.titleMr)})` : '';
 
     const msg = `✍️ <b>कथन / केसचे तपशील येथे पाठवा (Direct Narration):</b>\n\n` +
-      `<b>मसुदा:</b> <b>${safeTitle}</b>${safeTitleMr}\n\n` +
+      `<b>मसुदा:</b> ${prefix}<b>${safeTitle}</b>${safeTitleMr}\n\n` +
       `तुम्ही केसची संपूर्ण माहिती खाली एकाच मेसेजमध्ये <b>टाईप करून</b>, <b>पेस्ट करून</b> किंवा <b>व्हॉईस टायपिंगने (माईकवर बोलून)</b> पाठवू शकता.\n\n` +
       `💡 <b>काय काय नमूद करू शकता (Examples):</b>\n` +
       `• कोर्टाचे नाव व शहर (उदा. मे. जेएमएफसी सो. अमळनेर)\n` +
@@ -627,7 +670,7 @@ export class TelegramBotService {
 
   private async processNarrationInput(chatId: number, session: TelegramSession, narrationText: string) {
     if (!session.templateId) return;
-    const template = templateService.getTemplate(session.templateId);
+    const template = await templateService.getTemplateAsync(session.templateId);
     if (!template) {
       await this.sendMessage(chatId, '❌ निवडलेला मसुदा सापडला नाही. Type /start to begin again.');
       this.sessions.delete(chatId);
@@ -685,7 +728,7 @@ export class TelegramBotService {
 
   private async finishWizardAndSendFiles(chatId: number, session: TelegramSession) {
     if (!session.templateId) return;
-    const template = templateService.getTemplate(session.templateId);
+    const template = await templateService.getTemplateAsync(session.templateId);
     if (!template) return;
 
     await this.sendMessage(chatId, `🎉 <b>सर्व प्रश्नोत्तरे नोंदवली गेली आहेत!</b>`);
