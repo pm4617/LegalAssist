@@ -793,7 +793,8 @@ export class TelegramBotService {
         const pdfBuffer = await exportService.generatePdf({
           title: template.titleMr || template.title,
           content: mergedHtml,
-          paperSize: 'legal'
+          paperSize: 'legal',
+          engine: 'node'
         });
 
         await this.sendDocument(
@@ -805,7 +806,7 @@ export class TelegramBotService {
         );
         pdfSent = true;
       } catch (pdfErr: any) {
-        console.warn('Telegram PDF export or send failed:', pdfErr?.message);
+        console.error('❌ Telegram PDF export or send failed:', pdfErr);
         await this.sendMessage(chatId, `ℹ️ <i>PDF तयार किंवा पाठवताना अडचण आली, परंतु वरील Word (.docx) फाइल यशस्वीरित्या पाठवली आहे.</i>`);
       }
 

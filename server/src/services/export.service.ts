@@ -13,6 +13,7 @@ export interface PdfExportOptions {
   title: string;
   content: string;
   paperSize?: 'a4' | 'legal';
+  engine?: 'auto' | 'browser' | 'node';
 }
 
 export interface DocxExportOptions {
@@ -703,25 +704,29 @@ export class ExportService {
   }
 
   /**
-   * Generates a court-standard PDF buffer using the local headless browser engine (Edge/Chrome/Chromium)
+   * Generates a court-standard PDF buffer using the local headless browser engine (Chrome/Edge)
    * with full Devanagari ligatures and court margins, with automatic fallback to pure Node PDFKit.
    */
   async generatePdf(options: PdfExportOptions): Promise<Buffer> {
+    // On Vercel / serverless environment, bypass external headless browser process completely
+    // and generate court-standard Legal PDF via pure Node PDFKit in milliseconds.
+    if (options.engine === 'node' || process.env.VERCEL || process.env.DISABLE_BROWSER_PDF === 'true') {
+      return this.generatePdfFallback(options);
+    }
+
     const browserPath = this.findBrowserPath();
     if (!browserPath) {
-      console.warn('⚠️ No compatible browser found for PDF export. Using pure Node PDFKit fallback.');
       return this.generatePdfFallback(options);
     }
 
     const pageSize = options.paperSize === 'a4' ? 'A4 portrait' : 'legal portrait';
     const tempDir = os.tmpdir();
-    const tempProfileDir = path.join(tempDir, `browser_profile_${Date.now()}_${Math.random().toString(36).substring(7)}`);
-    const tempHtmlPath = path.join(tempDir, `court_doc_${Date.now()}_${Math.random().toString(36).substring(7)}.html`);
-    const tempPdfPath = path.join(tempDir, `court_doc_${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
+    const sharedProfileDir = path.join(tempDir, 'legalassist_browser_pdf_profile');
+    try { fs.mkdirSync(sharedProfileDir, { recursive: true }); } catch {}
 
-    try {
-      fs.mkdirSync(tempProfileDir, { recursive: true });
-    } catch {}
+    const fileId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const tempHtmlPath = path.join(tempDir, `court_doc_${fileId}.html`);
+    const tempPdfPath = path.join(tempDir, `court_doc_${fileId}.pdf`);
 
     const fullHtml = `<!DOCTYPE html>
 <html lang="mr">
@@ -734,13 +739,14 @@ export class ExportService {
       margin: 1.2in 1.0in 1.0in 1.5in; /* Standard Court Margin with Left Binding Space */
     }
     body {
-      font-family: 'Times New Roman', 'Mangal', 'Nirmala UI', 'Arial Unicode MS', serif;
+      font-family: 'Noto Sans Devanagari', 'Mangal', 'Nirmala UI', 'Times New Roman', serif;
       font-size: 13pt;
       line-height: 1.75;
       color: #000;
       margin: 0;
       padding: 0;
       text-align: justify;
+      white-space: pre-wrap;
     }
     p {
       margin: 0 0 8pt 0;
@@ -759,6 +765,7 @@ export class ExportService {
       width: 100%;
       border-collapse: collapse;
       margin: 12pt 0;
+      white-space: normal;
     }
     th, td {
       border: 1px solid #333;
@@ -782,7 +789,6 @@ export class ExportService {
     const cleanup = () => {
       try { if (fs.existsSync(tempHtmlPath)) fs.unlinkSync(tempHtmlPath); } catch {}
       try { if (fs.existsSync(tempPdfPath)) fs.unlinkSync(tempPdfPath); } catch {}
-      try { if (fs.existsSync(tempProfileDir)) fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
     };
 
     const args = [
@@ -797,41 +803,38 @@ export class ExportService {
       '--disable-sync',
       '--disable-background-networking',
       '--disable-default-apps',
-      '--run-all-compositor-stages-before-draw',
-      `--user-data-dir=${tempProfileDir}`,
+      `--user-data-dir=${sharedProfileDir}`,
       `--print-to-pdf=${tempPdfPath}`,
       pathToFileURL(tempHtmlPath).href
     ];
 
     try {
       const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
-        execFile(browserPath, args, { timeout: 15000 }, (err) => {
-          if (err) return reject(err);
+        execFile(browserPath, args, { timeout: 6000 }, (err) => {
+          // Check if output PDF was created successfully despite non-fatal stderr logs
           try {
-            if (!fs.existsSync(tempPdfPath)) {
-              return reject(new Error('PDF output file was not generated'));
+            if (fs.existsSync(tempPdfPath)) {
+              const buffer = fs.readFileSync(tempPdfPath);
+              if (buffer && buffer.length > 0) {
+                return resolve(buffer);
+              }
             }
-            const buffer = fs.readFileSync(tempPdfPath);
-            if (!buffer || buffer.length === 0) {
-              return reject(new Error('Generated PDF file was empty'));
-            }
-            resolve(buffer);
-          } catch (readErr) {
-            reject(readErr);
-          }
+          } catch {}
+          if (err) return reject(err);
+          reject(new Error('PDF output file was not generated'));
         });
       });
       cleanup();
       return pdfBuffer;
     } catch (browserErr: any) {
       cleanup();
-      console.warn('⚠️ Headless browser PDF generation failed or timed out:', browserErr?.message, '- falling back to pure Node PDFKit generator.');
+      console.warn('⚠️ Browser PDF generation unavailable or timed out:', browserErr?.message, '- using pure Node Devanagari PDF generator.');
       return await this.generatePdfFallback(options);
     }
   }
 
   /**
-   * Pure Node.js fallback PDF generator using PDFKit when no local browser is installed or available.
+   * Pure Node.js court-standard PDF generator using PDFKit and bundled Noto Sans Devanagari typography.
    * Produces a court-standard Legal or A4 PDF with 1.5" left margin for binding.
    */
   async generatePdfFallback(options: PdfExportOptions): Promise<Buffer> {
@@ -853,23 +856,22 @@ export class ExportService {
           }
         });
 
-        const fontPaths = [
-          'C:\\Windows\\Fonts\\arial.ttf',
-          '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-          '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-          '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
-        ];
-        let fontLoaded = false;
-        for (const fp of fontPaths) {
-          if (fs.existsSync(fp)) {
-            try {
-              doc.font(fp);
-              fontLoaded = true;
-              break;
-            } catch {}
+        const regFontPath = this.findFontPath('NotoSansDevanagari-Regular.ttf');
+        const boldFontPath = this.findFontPath('NotoSansDevanagari-Bold.ttf') || regFontPath;
+
+        let fontRegistered = false;
+        if (regFontPath) {
+          try {
+            doc.registerFont('Devanagari', regFontPath);
+            doc.registerFont('Devanagari-Bold', boldFontPath || regFontPath);
+            doc.font('Devanagari');
+            fontRegistered = true;
+          } catch (e) {
+            console.warn('Failed to register Devanagari font in PDFKit:', e);
           }
         }
-        if (!fontLoaded) {
+
+        if (!fontRegistered) {
           doc.font('Helvetica');
         }
 
@@ -878,7 +880,89 @@ export class ExportService {
         doc.on('end', () => resolve(Buffer.concat(chunks)));
         doc.on('error', (err: Error) => reject(err));
 
-        const blocks = extractBlocks(options.content || '');
+        const contentStr = (options.content || '').trim();
+        const hasHtmlTags = /<(p|div|hr|h[1-6]|center|blockquote|table)[\s/>]/i.test(contentStr) || isPageBreakString(contentStr);
+
+        // Path A: Plain Text Document with Newlines (Standard Court Drafts)
+        if (!hasHtmlTags) {
+          const lines = contentStr.split(/\r?\n/);
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            if (!trimmed) {
+              doc.moveDown(0.35);
+              continue;
+            }
+
+            if (isPageBreakString(trimmed)) {
+              doc.addPage();
+              continue;
+            }
+
+            // Section divider or affidavit header
+            if (trimmed.startsWith('------') || trimmed.includes('AFFIDAVIT') || trimmed.includes('प्रतिज्ञालेख')) {
+              doc.moveDown(0.5);
+              if (fontRegistered) doc.font('Devanagari-Bold');
+              doc.fontSize(13).text(trimmed, { align: 'center' });
+              if (fontRegistered) doc.font('Devanagari');
+              doc.fontSize(11.5).moveDown(0.4);
+              continue;
+            }
+
+            // Court title or subject line
+            const isHeader = (
+              i < 4 ||
+              trimmed.includes('यांचे कोर्टात') ||
+              trimmed.startsWith('HMP') ||
+              trimmed.startsWith('विवाह अर्ज नंबर') ||
+              trimmed.startsWith('विषय :-') ||
+              trimmed.startsWith('सामनेवाले :')
+            );
+
+            if (isHeader) {
+              if (fontRegistered) doc.font('Devanagari-Bold');
+              const isCentered = trimmed.startsWith('विषय') || trimmed.includes('यांचे कोर्टात') || i === 0;
+              doc.fontSize(trimmed.startsWith('विषय') ? 12 : 12.5).text(trimmed, {
+                align: isCentered ? 'center' : 'left',
+                lineGap: 3
+              });
+              if (fontRegistered) doc.font('Devanagari');
+              doc.fontSize(11.5).moveDown(0.3);
+              continue;
+            }
+
+            // Signatures, dates, and verification footers
+            const isSignatureOrDate = (
+              trimmed.startsWith('दिनांक :') ||
+              trimmed.startsWith('ठिकाण :') ||
+              trimmed.includes('अर्जदार क्र.') ||
+              trimmed.includes('चे वकील') ||
+              trimmed.includes('प्रतिज्ञालेख देणार')
+            );
+
+            if (isSignatureOrDate) {
+              if (fontRegistered) doc.font('Devanagari');
+              doc.fontSize(11.5).text(trimmed, { align: 'left', lineGap: 2 });
+              continue;
+            }
+
+            // Standard court paragraph
+            if (fontRegistered) doc.font('Devanagari');
+            doc.fontSize(11.5).text(trimmed, {
+              align: 'justify',
+              indent: 20,
+              lineGap: 4
+            });
+            doc.moveDown(0.25);
+          }
+
+          doc.end();
+          return;
+        }
+
+        // Path B: Rich HTML Document (with <table>, <p>, <b>, etc.)
+        const blocks = extractBlocks(contentStr);
 
         for (const block of blocks) {
           if (block.isPageBreak) {
@@ -895,13 +979,19 @@ export class ExportService {
               const colWidth = usableWidth / numCols;
 
               doc.moveDown(0.5);
-              for (const row of rows) {
+              for (let r = 0; r < rows.length; r++) {
+                const row = rows[r];
+                const isHeader = r === 0;
                 const rowY = doc.y;
                 if (rowY > (isLegal ? 920 : 760)) {
                   doc.addPage();
                 }
                 const startY = doc.y;
-                let maxHeight = 16;
+                let maxHeight = 18;
+
+                if (fontRegistered) doc.font(isHeader ? 'Devanagari-Bold' : 'Devanagari');
+                doc.fontSize(isHeader ? 10.5 : 10);
+
                 for (let c = 0; c < row.length; c++) {
                   const cellText = row[c] || '';
                   const cellX = 108 + c * colWidth;
@@ -913,7 +1003,7 @@ export class ExportService {
                     lineBreak: true
                   });
                 }
-                doc.rect(108, startY, usableWidth, maxHeight).strokeColor('#999999').stroke();
+                doc.rect(108, startY, usableWidth, maxHeight).strokeColor('#888888').stroke();
                 doc.y = startY + maxHeight;
               }
               doc.moveDown(0.5);
@@ -939,9 +1029,26 @@ export class ExportService {
             align = 'left';
           }
 
-          const fontSize = block.isHeading ? 14 : 12;
+          const isBold = (
+            block.isHeading ||
+            /<(b|strong)\b/i.test(block.openTag || '') ||
+            /<(b|strong)\b/i.test(block.html || '') ||
+            rawText.startsWith('------') ||
+            rawText.includes('AFFIDAVIT') ||
+            rawText.includes('प्रतिज्ञालेख')
+          );
+
+          if (rawText.startsWith('------') || rawText.includes('AFFIDAVIT') || rawText.includes('प्रतिज्ञालेख')) {
+            align = 'center';
+          }
+
+          if (fontRegistered) {
+            doc.font(isBold ? 'Devanagari-Bold' : 'Devanagari');
+          }
+
+          const fontSize = block.isHeading ? 13 : 11.5;
           const isCentered = align === 'center' || align === 'right';
-          const textIndent = isCentered ? 0 : 25;
+          const textIndent = (isCentered || isBold) ? 0 : 20;
 
           doc.fontSize(fontSize);
           doc.text(rawText, {
@@ -949,7 +1056,7 @@ export class ExportService {
             indent: textIndent,
             lineGap: 4
           });
-          doc.moveDown(block.isHeading ? 0.6 : 0.4);
+          doc.moveDown(block.isHeading ? 0.5 : 0.3);
         }
 
         doc.end();
@@ -957,6 +1064,29 @@ export class ExportService {
         reject(err);
       }
     });
+  }
+
+  private findFontPath(fontFilename: string): string | null {
+    const candidates = [
+      path.join(__dirname, '../assets/fonts', fontFilename),
+      path.join(__dirname, '../../assets/fonts', fontFilename),
+      path.join(__dirname, '../../../assets/fonts', fontFilename),
+      path.join(__dirname, 'assets/fonts', fontFilename),
+      path.join(process.cwd(), 'src', 'assets', 'fonts', fontFilename),
+      path.join(process.cwd(), 'assets', 'fonts', fontFilename),
+      path.join(process.cwd(), 'server', 'src', 'assets', 'fonts', fontFilename),
+      path.join(process.cwd(), 'server', 'assets', 'fonts', fontFilename),
+      path.join(process.cwd(), 'dist', 'assets', 'fonts', fontFilename),
+      path.join('C:\\Windows\\Fonts', fontFilename.includes('Bold') ? 'NirmalaB.ttf' : 'Nirmala.ttf'),
+      path.join('C:\\Windows\\Fonts', 'mangal.ttf')
+    ];
+
+    for (const c of candidates) {
+      if (c && fs.existsSync(c)) {
+        return c;
+      }
+    }
+    return null;
   }
 
   private findBrowserPath(): string | null {
@@ -968,21 +1098,21 @@ export class ExportService {
     }
 
     const winCandidates = [
-      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
       'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
       ...(process.env.LOCALAPPDATA ? [
-        path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
         path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
       ] : []),
       ...(process.env.PROGRAMFILES ? [
-        path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
         path.join(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
       ] : []),
       ...(process.env['PROGRAMFILES(X86)'] ? [
-        path.join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
         path.join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        path.join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
       ] : [])
     ];
 
