@@ -158,12 +158,36 @@ function sanitizeAndMarkupHtml(raw: string): string {
   return s;
 }
 
-function parseParagraphToTextRuns(
+export interface ParsedRun {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  fontSize?: number; // in points
+  fontFamily?: string;
+  break?: number;
+}
+
+export interface ParsedTableCell {
+  isHeader: boolean;
+  colspan: number;
+  rowspan: number;
+  align: 'left' | 'center' | 'right' | 'justify';
+  cellInner: string;
+  plainText: string;
+  runs: ParsedRun[];
+}
+
+export interface ParsedTableRow {
+  cells: ParsedTableCell[];
+}
+
+function parseParagraphToRuns(
   blockHtml: string,
   defaultFont: string,
-  defaultFontSize: number
-): TextRun[] {
-  const runs: TextRun[] = [];
+  defaultFontSizePt: number
+): ParsedRun[] {
+  const runs: ParsedRun[] = [];
   const unescaped = unescapeHtml(blockHtml);
   const sanitized = sanitizeAndMarkupHtml(unescaped);
   const tokens = sanitized.split(/(<[^>]+>)/g);
@@ -212,8 +236,7 @@ function parseParagraphToTextRuns(
           const val = parseFloat(sizeMatch[1]);
           const unit = (sizeMatch[2] || 'pt').toLowerCase();
           if (!isNaN(val) && val > 0) {
-            const pt = unit === 'px' ? val * 0.75 : val;
-            fontSize = Math.round(pt * 2);
+            fontSize = unit === 'px' ? val * 0.75 : val;
           }
         }
 
@@ -243,31 +266,61 @@ function parseParagraphToTextRuns(
       }
 
       if (text.length > 0) {
-        runs.push(
-          new TextRun({
-            text,
-            font: currentStyle.fontFamily || defaultFont,
-            size: currentStyle.fontSize || defaultFontSize,
-            bold: currentStyle.bold || isMdHeading,
-            italics: currentStyle.italic,
-            underline: currentStyle.underline ? {} : undefined,
-            break: pendingBreak > 0 ? pendingBreak : undefined,
-          })
-        );
+        runs.push({
+          text,
+          fontFamily: currentStyle.fontFamily || defaultFont,
+          fontSize: currentStyle.fontSize || defaultFontSizePt,
+          bold: currentStyle.bold || isMdHeading,
+          italic: currentStyle.italic,
+          underline: currentStyle.underline,
+          break: pendingBreak > 0 ? pendingBreak : undefined,
+        });
         pendingBreak = 0;
       }
     }
   }
 
   if (pendingBreak > 0) {
-    runs.push(new TextRun({ text: '', font: defaultFont, size: defaultFontSize, break: pendingBreak }));
+    runs.push({
+      text: '',
+      fontFamily: defaultFont,
+      fontSize: defaultFontSizePt,
+      bold: false,
+      italic: false,
+      underline: false,
+      break: pendingBreak,
+    });
   }
 
   if (runs.length === 0 && plainTextOnly.length > 0) {
-    runs.push(new TextRun({ text: plainTextOnly, font: defaultFont, size: defaultFontSize }));
+    runs.push({
+      text: plainTextOnly,
+      fontFamily: defaultFont,
+      fontSize: defaultFontSizePt,
+      bold: false,
+      italic: false,
+      underline: false,
+    });
   }
 
   return runs;
+}
+
+function parseParagraphToTextRuns(
+  blockHtml: string,
+  defaultFont: string,
+  defaultFontSize: number
+): TextRun[] {
+  const runs = parseParagraphToRuns(blockHtml, defaultFont, defaultFontSize / 2);
+  return runs.map(r => new TextRun({
+    text: r.text,
+    font: r.fontFamily || defaultFont,
+    size: r.fontSize ? Math.round(r.fontSize * 2) : defaultFontSize,
+    bold: r.bold,
+    italics: r.italic,
+    underline: r.underline ? {} : undefined,
+    break: r.break && r.break > 0 ? r.break : undefined,
+  }));
 }
 
 function getAlignmentFromTag(tagHtml: string): string | null {
@@ -514,14 +567,18 @@ function getParagraphIndent(openTag: string, innerHtml: string): number | undefi
   return undefined;
 }
 
-function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSize: number): Table {
-  const rows: TableRow[] = [];
+function extractRichTableRows(
+  tableHtml: string,
+  defaultFont: string,
+  defaultFontSizePt: number
+): ParsedTableRow[] {
+  const rows: ParsedTableRow[] = [];
   const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   let trMatch: RegExpExecArray | null;
 
   while ((trMatch = trRe.exec(tableHtml)) !== null) {
     const trInner = trMatch[1] || '';
-    const cells: TableCell[] = [];
+    const cells: ParsedTableCell[] = [];
     const cellRe = /<(th|td)([^>]*)>([\s\S]*?)<\/\1>/gi;
     let cellMatch: RegExpExecArray | null;
 
@@ -537,20 +594,65 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
       const rowspan = rowspanMatch ? parseInt(rowspanMatch[1], 10) : 1;
 
       const cellAlignRaw = getAlignmentFromTag(`<td${cellAttrs}>`);
-      const cellAlign =
-        cellAlignRaw === 'center' ? AlignmentType.CENTER :
-        cellAlignRaw === 'right'  ? AlignmentType.RIGHT  :
-        cellAlignRaw === 'justify' ? AlignmentType.JUSTIFIED :
-        AlignmentType.LEFT;
+      const align: 'left' | 'center' | 'right' | 'justify' =
+        cellAlignRaw === 'center' ? 'center' :
+        cellAlignRaw === 'right'  ? 'right'  :
+        cellAlignRaw === 'justify' ? 'justify' :
+        'left';
 
-      const plainCellText = unescapeHtml(cellInner.replace(/<[^>]+>/g, '')).trim();
-      const cellRuns = plainCellText
-        ? parseParagraphToTextRuns(cellInner, defaultFont, defaultFontSize)
-        : [new TextRun({ text: '', font: defaultFont, size: defaultFontSize })];
+      const plainText = unescapeHtml(cellInner.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '')).trim();
+      const cellFontSize = isHeader ? Math.min(defaultFontSizePt, 10.5) : Math.min(defaultFontSizePt, 10);
+      const runs = parseParagraphToRuns(cellInner, defaultFont, cellFontSize);
 
       if (isHeader) {
-        cellRuns.forEach((r: any) => { if (r._data) r._data.bold = true; });
+        for (const r of runs) {
+          r.bold = true;
+        }
       }
+
+      cells.push({
+        isHeader,
+        colspan,
+        rowspan,
+        align,
+        cellInner,
+        plainText,
+        runs,
+      });
+    }
+
+    if (cells.length > 0) {
+      rows.push({ cells });
+    }
+  }
+
+  return rows;
+}
+
+function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSize: number): Table {
+  const parsedRows = extractRichTableRows(tableHtml, defaultFont, defaultFontSize / 2);
+  const rows: TableRow[] = [];
+
+  for (const pr of parsedRows) {
+    const cells: TableCell[] = [];
+    for (const c of pr.cells) {
+      const cellAlignment =
+        c.align === 'center' ? AlignmentType.CENTER :
+        c.align === 'right'  ? AlignmentType.RIGHT  :
+        c.align === 'justify' ? AlignmentType.JUSTIFIED :
+        AlignmentType.LEFT;
+
+      const cellRuns = c.runs.length > 0
+        ? c.runs.map(r => new TextRun({
+            text: r.text,
+            font: r.fontFamily || defaultFont,
+            size: r.fontSize ? Math.round(r.fontSize * 2) : defaultFontSize,
+            bold: r.bold || c.isHeader,
+            italics: r.italic,
+            underline: r.underline ? {} : undefined,
+            break: r.break ? r.break : undefined,
+          }))
+        : [new TextRun({ text: c.plainText, font: defaultFont, size: defaultFontSize, bold: c.isHeader })];
 
       const borderStyle = {
         style: BorderStyle.SINGLE,
@@ -559,17 +661,17 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
       };
 
       cells.push(new TableCell({
-        columnSpan: colspan > 1 ? colspan : undefined,
-        rowSpan: rowspan > 1 ? rowspan : undefined,
+        columnSpan: c.colspan > 1 ? c.colspan : undefined,
+        rowSpan: c.rowspan > 1 ? c.rowspan : undefined,
         verticalAlign: VerticalAlign.CENTER,
-        shading: isHeader ? { fill: 'E8EAF0' } : undefined,
+        shading: c.isHeader ? { fill: 'E8EAF0' } : undefined,
         borders: {
           top: borderStyle, bottom: borderStyle,
           left: borderStyle, right: borderStyle,
         },
         children: [
           new Paragraph({
-            alignment: cellAlign,
+            alignment: cellAlignment,
             spacing: { before: 60, after: 60, line: 240, lineRule: LineRuleType.AUTO },
             children: cellRuns,
           }),
@@ -879,7 +981,7 @@ export class ExportService {
         doc.on('error', (err: Error) => reject(err));
 
         const contentStr = (options.content || '').trim();
-        const hasHtmlTags = /<(p|div|hr|h[1-6]|center|blockquote|table)[\s/>]/i.test(contentStr) || isPageBreakString(contentStr);
+        const hasHtmlTags = /<(p|div|hr|h[1-6]|center|blockquote|table|b|strong|i|em|u|span)[\s/>]/i.test(contentStr) || isPageBreakString(contentStr);
 
         // Path A: Plain Text Document with Newlines (Standard Court Drafts)
         if (!hasHtmlTags) {
@@ -972,6 +1074,10 @@ export class ExportService {
 
         // Path B: Rich HTML Document (with <table>, <p>, <b>, etc.)
         const blocks = extractBlocks(contentStr);
+        const globals = extractDocumentGlobals(contentStr, isLegal, { paperSize: options.paperSize } as any);
+        const defaultFont = globals.docFontFamily;
+        const defaultFontSizePt = Math.max(10, Math.min(globals.docFontSize / 2, 12.5));
+        const defaultLineSpacing = globals.docLineSpacing;
 
         for (const block of blocks) {
           if (block.isPageBreak) {
@@ -981,9 +1087,9 @@ export class ExportService {
           }
 
           if (block.isTable && block.tableHtml) {
-            const rows = extractTableData(block.tableHtml);
-            if (rows.length > 0) {
-              const numCols = Math.max(...rows.map(r => r.length), 1);
+            const parsedRows = extractRichTableRows(block.tableHtml, defaultFont, defaultFontSizePt);
+            if (parsedRows.length > 0) {
+              const numCols = Math.max(...parsedRows.map(r => r.cells.length), 1);
 
               // Smart proportional column widths allocation for court tables
               let colWidths: number[] = [];
@@ -1008,40 +1114,86 @@ export class ExportService {
                 colWidths = Array(numCols).fill(defaultCol);
               }
 
-              doc.moveDown(0.5);
-              for (let r = 0; r < rows.length; r++) {
-                const row = rows[r];
-                const isHeader = r === 0;
-                const rowY = doc.y;
-                if (rowY > (isLegal ? 920 : 760)) {
+              doc.moveDown(0.4);
+              for (let r = 0; r < parsedRows.length; r++) {
+                const pRow = parsedRows[r];
+                const isHeader = r === 0 || pRow.cells.some(c => c.isHeader);
+                let maxHeight = 22;
+
+                // Compute row height based on cell text wraps
+                for (let c = 0; c < pRow.cells.length; c++) {
+                  const cell = pRow.cells[c];
+                  const colW = colWidths[c] || (usableWidth / numCols);
+                  const cellText = cell.plainText || cell.runs.map(run => run.text).join(' ');
+                  const cellFont = (isHeader || cell.runs.some(run => run.bold)) ? 'Devanagari-Bold' : 'Devanagari';
+                  if (fontRegistered) doc.font(cellFont);
+                  doc.fontSize(isHeader ? 10.5 : 10);
+                  const textHeight = doc.heightOfString(cellText, { width: colW - 8 });
+                  if (textHeight + 10 > maxHeight) maxHeight = Math.round(textHeight + 10);
+                }
+
+                if (doc.y + maxHeight > (isLegal ? 930 : 760)) {
                   doc.addPage();
                   doc.x = leftMargin;
                 }
+
                 const startY = doc.y;
-                let maxHeight = 20;
 
-                if (fontRegistered) doc.font(isHeader ? 'Devanagari-Bold' : 'Devanagari');
-                doc.fontSize(isHeader ? 10.5 : 10);
-
-                // Compute row height based on cell text wraps
-                for (let c = 0; c < row.length; c++) {
-                  const cellText = row[c] || '';
-                  const colW = colWidths[c] || (usableWidth / numCols);
-                  const textHeight = doc.heightOfString(cellText, { width: colW - 8 });
-                  if (textHeight + 8 > maxHeight) maxHeight = textHeight + 8;
+                // Render header background shading matching Word E8EAF0
+                if (isHeader) {
+                  doc.rect(leftMargin, startY, usableWidth, maxHeight).fill('#E8EAF0');
                 }
 
-                // Render cell texts
+                // Render cell texts with formatting
                 let currentX = leftMargin;
-                for (let c = 0; c < row.length; c++) {
-                  const cellText = row[c] || '';
+                for (let c = 0; c < pRow.cells.length; c++) {
+                  const cell = pRow.cells[c];
                   const colW = colWidths[c] || (usableWidth / numCols);
-                  const isCenterCol = isHeader || c === 0 || (numCols === 4 && c === 2);
-                  doc.text(cellText, currentX + 4, startY + 4, {
-                    width: colW - 8,
-                    align: isCenterCol ? 'center' : 'left',
-                    lineBreak: true
-                  });
+                  const cellAlign = cell.align || (isHeader || c === 0 || (numCols === 4 && c === 2) ? 'center' : 'left');
+
+                  doc.fillColor('#000000');
+                  const cellRuns = cell.runs.filter(cr => (cr.text && cr.text.length > 0) || (cr.break && cr.break > 0));
+
+                  if (cellRuns.length > 0) {
+                    for (let ri = 0; ri < cellRuns.length; ri++) {
+                      const crun = cellRuns[ri];
+                      const isFirst = (ri === 0);
+                      const isLast = (ri === cellRuns.length - 1);
+                      const cfont = fontRegistered
+                        ? ((isHeader || crun.bold) ? 'Devanagari-Bold' : 'Devanagari')
+                        : ((isHeader || crun.bold) ? 'Helvetica-Bold' : 'Helvetica');
+                      doc.font(cfont).fontSize(isHeader ? 10.5 : 10);
+
+                      let runText = crun.text;
+                      if (crun.break && crun.break > 0) {
+                        runText = '\n'.repeat(crun.break) + runText;
+                      }
+
+                      if (isFirst) {
+                        doc.text(runText, currentX + 4, startY + 5, {
+                          width: colW - 8,
+                          align: cellAlign,
+                          underline: !!crun.underline,
+                          continued: !isLast
+                        });
+                      } else {
+                        doc.text(runText, {
+                          underline: !!crun.underline,
+                          continued: !isLast
+                        });
+                      }
+                    }
+                  } else {
+                    const cfont = fontRegistered
+                      ? (isHeader ? 'Devanagari-Bold' : 'Devanagari')
+                      : (isHeader ? 'Helvetica-Bold' : 'Helvetica');
+                    doc.font(cfont).fontSize(isHeader ? 10.5 : 10);
+                    doc.text(cell.plainText, currentX + 4, startY + 5, {
+                      width: colW - 8,
+                      align: cellAlign,
+                      lineBreak: true
+                    });
+                  }
                   currentX += colW;
                 }
 
@@ -1050,28 +1202,27 @@ export class ExportService {
 
                 // Draw vertical grid lines between columns
                 let gridX = leftMargin;
-                for (let c = 0; c < row.length - 1; c++) {
+                for (let c = 0; c < pRow.cells.length - 1; c++) {
                   gridX += colWidths[c] || (usableWidth / numCols);
                   doc.moveTo(gridX, startY).lineTo(gridX, startY + maxHeight).strokeColor('#bbbbbb').stroke();
                 }
 
                 doc.y = startY + maxHeight;
               }
-              // CRUCIAL: Reset doc.x back to the left binding margin so subsequent text never gets trapped in the right column
+
+              // CRUCIAL: Reset doc.x back to the left binding margin
               doc.x = leftMargin;
-              doc.moveDown(0.5);
+              doc.moveDown(0.4);
             }
             continue;
           }
 
-          const rawText = unescapeHtml(
-            (block.html || '')
-              .replace(/<br\s*\/?>/gi, '\n')
-              .replace(/<\/p>/gi, '\n')
-              .replace(/<[^>]+>/g, '')
-          ).trim();
-
-          if (!rawText) continue;
+          const plainText = unescapeHtml(block.html.replace(/<[^>]+>/g, '')).trim();
+          if (!plainText) {
+            doc.moveDown(0.25);
+            doc.x = leftMargin;
+            continue;
+          }
 
           let align: 'left' | 'center' | 'right' | 'justify' = 'justify';
           if (block.alignment === 'center' || block.isHeading) {
@@ -1080,42 +1231,103 @@ export class ExportService {
             align = 'right';
           } else if (block.alignment === 'left') {
             align = 'left';
+          } else if (block.alignment === 'justify') {
+            align = 'justify';
+          } else {
+            const docxAlign = getParagraphAlignment(block.html, plainText);
+            if (docxAlign === AlignmentType.CENTER) align = 'center';
+            else if (docxAlign === AlignmentType.RIGHT) align = 'right';
+            else if (docxAlign === AlignmentType.LEFT) align = 'left';
+            else align = 'justify';
           }
 
-          const isBold = (
-            block.isHeading ||
-            /<(b|strong)\b/i.test(block.openTag || '') ||
-            /<(b|strong)\b/i.test(block.html || '') ||
-            rawText.startsWith('------') ||
-            rawText.includes('AFFIDAVIT') ||
-            rawText.includes('प्रतिज्ञालेख')
-          );
-
-          if (rawText.startsWith('------') || rawText.includes('AFFIDAVIT') || rawText.includes('प्रतिज्ञालेख')) {
+          if (plainText.startsWith('------') || plainText.includes('AFFIDAVIT') || plainText.includes('प्रतिज्ञालेख')) {
             align = 'center';
           }
 
-          if (fontRegistered) {
-            doc.font(isBold ? 'Devanagari-Bold' : 'Devanagari');
+          const { before, after } = getParagraphMarginSpacing(block.openTag, block.html);
+          const beforePt = Math.max(0, Math.round(before / 20));
+          const afterPt = Math.max(0, Math.round(after / 20));
+
+          const lineSpacingDxa = getParagraphLineSpacing(block.openTag, block.html, defaultLineSpacing);
+          const lineSpacingRatio = lineSpacingDxa / 240;
+          const currentLineGap = Math.max(2, Math.round((lineSpacingRatio - 1) * defaultFontSizePt + 2));
+
+          const indentDxa = getParagraphIndent(block.openTag, block.html);
+          let indentPt = 0;
+          if (indentDxa !== undefined) {
+            indentPt = Math.round(indentDxa / 20);
+          } else if (align === 'center' || align === 'right' || block.isHeading) {
+            indentPt = 0;
+          } else {
+            indentPt = 20; // Standard court paragraph indent
           }
 
-          const fontSize = block.isHeading ? 13 : 11.5;
-          const isCentered = align === 'center' || align === 'right';
-          const textIndent = (isCentered || isBold) ? 0 : 20;
+          if (doc.y > (isLegal ? 930 : 760)) {
+            doc.addPage();
+            doc.x = leftMargin;
+          }
 
-          // Always ensure doc.x is reset to leftMargin and width is usableWidth
+          if (beforePt > 0) {
+            doc.y += Math.min(beforePt, 20);
+          }
+
+          const runs = parseParagraphToRuns(block.html, defaultFont, defaultFontSizePt);
+          const filteredRuns = runs.filter(r => (r.text && r.text.length > 0) || (r.break && r.break > 0));
+
+          if (filteredRuns.length === 0) {
+            doc.moveDown(0.25);
+            doc.x = leftMargin;
+            continue;
+          }
+
           doc.x = leftMargin;
-          doc.fontSize(fontSize);
-          doc.text(rawText, {
-            width: usableWidth,
-            align,
-            indent: textIndent,
-            lineGap: 4
-          });
+          for (let i = 0; i < filteredRuns.length; i++) {
+            const run = filteredRuns[i];
+            const isFirst = (i === 0);
+            const isLast = (i === filteredRuns.length - 1);
+            const runFontSize = block.isHeading
+              ? Math.max(run.fontSize || defaultFontSizePt, 13)
+              : (run.fontSize || defaultFontSizePt);
+
+            let fontName = 'Devanagari';
+            if (fontRegistered) {
+              fontName = (run.bold || block.isHeading) ? 'Devanagari-Bold' : 'Devanagari';
+            } else {
+              fontName = (run.bold || block.isHeading) ? 'Helvetica-Bold' : 'Helvetica';
+            }
+
+            doc.font(fontName).fontSize(runFontSize).fillColor('#000000');
+
+            let runText = run.text;
+            if (run.break && run.break > 0) {
+              runText = '\n'.repeat(run.break) + runText;
+            }
+
+            if (isFirst) {
+              doc.text(runText, {
+                width: usableWidth,
+                align,
+                indent: indentPt,
+                lineGap: currentLineGap,
+                underline: !!run.underline,
+                continued: !isLast
+              });
+            } else {
+              doc.text(runText, {
+                underline: !!run.underline,
+                continued: !isLast
+              });
+            }
+          }
+
           doc.x = leftMargin;
-          doc.moveDown(block.isHeading ? 0.5 : 0.3);
+          if (afterPt > 0) {
+            doc.y += Math.min(afterPt, 20);
+          } else {
+            doc.moveDown(block.isHeading ? 0.4 : 0.25);
+          }
         }
-
         doc.end();
       } catch (err) {
         reject(err);
