@@ -137,26 +137,55 @@ function getParagraphAlignment(blockHtml: string, rawText: string): any {
 }
 
 function sanitizeAndMarkupHtml(raw: string): string {
+  if (!raw) return '';
   let s = raw.replace(/<([^>]*)>/g, (_match, inner) => {
     const collapsed = inner.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
     return `<${collapsed}>`;
   });
 
-  s = s
-    .replace(/<span[^>]*\blang=["'][^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '$1')
-    .replace(/<span[^>]*\bmso-[a-z-]+:[^>]*>([\s\S]*?)<\/span>/gi, '$1')
-    .replace(/<span[^>]*font-family:[^>]*>([\s\S]*?)<\/span>/gi, '$1');
-
-  s = s
-    .replace(/<span[^>]*font-weight:\s*bold[^>]*>([\s\S]*?)<\/span>/gi, '<b>$1</b>')
-    .replace(/<span[^>]*font-style:\s*italic[^>]*>([\s\S]*?)<\/span>/gi, '<i>$1</i>')
-    .replace(/<span[^>]*text-decoration:\s*underline[^>]*>([\s\S]*?)<\/span>/gi, '<u>$1</u>');
-
-  s = s.replace(/<[^>]*$/gm, '');
-  s = s.replace(/^[^<]*>/gm, '');
+  s = s.replace(/<!--[\s\S]*?-->/g, '');
+  s = s.replace(/<\/?o:p[^>]*>/gi, '');
 
   return s;
 }
+
+function parseFontSize(token: string, defaultFontSizePt: number): number | undefined {
+  const sizeMatch = /font-size:\s*([\d.]+)\s*(pt|px|rem|em|%)?/i.exec(token);
+  if (sizeMatch) {
+    const val = parseFloat(sizeMatch[1]);
+    if (!isNaN(val) && val > 0) {
+      const unit = (sizeMatch[2] || '').toLowerCase();
+      let pt: number;
+      if (unit === 'pt') {
+        pt = val;
+      } else if (unit === 'px') {
+        pt = val * 0.75;
+      } else if (unit === 'rem' || unit === 'em') {
+        pt = val * defaultFontSizePt;
+      } else if (unit === '%') {
+        pt = (val / 100) * defaultFontSizePt;
+      } else {
+        if (val <= 4) {
+          pt = val * defaultFontSizePt;
+        } else {
+          pt = val;
+        }
+      }
+      if (pt < 6) pt = defaultFontSizePt;
+      return pt;
+    }
+  }
+
+  const fontAttrMatch = /size=["']?(\d+)["']?/i.exec(token);
+  if (fontAttrMatch) {
+    const s = parseInt(fontAttrMatch[1], 10);
+    const fontSizes = [7.5, 7.5, 10, 12, 14, 18, 24, 36];
+    return fontSizes[s] || defaultFontSizePt;
+  }
+
+  return undefined;
+}
+
 
 export interface ParsedRun {
   text: string;
@@ -188,15 +217,14 @@ function parseParagraphToRuns(
   defaultFontSizePt: number
 ): ParsedRun[] {
   const runs: ParsedRun[] = [];
-  const unescaped = unescapeHtml(blockHtml);
-  const sanitized = sanitizeAndMarkupHtml(unescaped);
+  const sanitized = sanitizeAndMarkupHtml(blockHtml);
   const tokens = sanitized.split(/(<[^>]+>)/g);
 
-  const styleStack: StyleState[] = [{ bold: false, italic: false, underline: false }];
-  let currentStyle: StyleState = { bold: false, italic: false, underline: false };
+  const styleStack: StyleState[] = [{ bold: false, italic: false, underline: false, fontSize: defaultFontSizePt }];
+  let currentStyle: StyleState = { bold: false, italic: false, underline: false, fontSize: defaultFontSizePt };
   let pendingBreak = 0;
 
-  const plainTextOnly = sanitized.replace(/<[^>]+>/g, '').trim();
+  const plainTextOnly = unescapeHtml(sanitized.replace(/<[^>]+>/g, '')).trim();
   const isMdHeading = /^#+\s+/.test(plainTextOnly);
 
   for (const token of tokens) {
@@ -230,20 +258,17 @@ function parseParagraphToRuns(
         const isItalic = /font-style:\s*italic/i.test(token);
         const isUnderline = /text-decoration:\s*underline/i.test(token);
 
-        let fontSize: number | undefined = currentStyle.fontSize;
-        const sizeMatch = /font-size:\s*([\d.]+)(pt|px)?/i.exec(token);
-        if (sizeMatch) {
-          const val = parseFloat(sizeMatch[1]);
-          const unit = (sizeMatch[2] || 'pt').toLowerCase();
-          if (!isNaN(val) && val > 0) {
-            fontSize = unit === 'px' ? val * 0.75 : val;
-          }
-        }
+        const parsedFs = parseFontSize(token, defaultFontSizePt);
+        let fontSize: number | undefined = parsedFs !== undefined ? parsedFs : currentStyle.fontSize;
 
         let fontFamily: string | undefined = currentStyle.fontFamily;
-        const fontMatch = /font-family:\s*['"]?([^;'"]+)['"]?/i.exec(token) || /face=['"]?([^'"]+)['"]?/i.exec(token);
+        const fontMatch = /font-family:\s*([^;]+)/i.exec(token) || /face=['"]?([^'"]+)['"]?/i.exec(token);
         if (fontMatch && fontMatch[1]) {
-          fontFamily = fontMatch[1].trim();
+          const rawFf = fontMatch[1].replace(/&quot;|&apos;|['"]/gi, '').trim();
+          const firstFont = rawFf.split(',')[0].trim();
+          if (firstFont) {
+            fontFamily = firstFont;
+          }
         }
 
         currentStyle = {
@@ -259,16 +284,21 @@ function parseParagraphToRuns(
         currentStyle = styleStack[styleStack.length - 1];
       }
     } else {
-      let text = token.replace(/<[^>]*$/g, '').replace(/^[^<]*>/g, '');
+      let text = unescapeHtml(token).replace(/[\r\n\t]+/g, ' ');
 
       if (isMdHeading) {
         text = text.replace(/^#+\s+/, '');
       }
 
       if (text.length > 0) {
+        let font = currentStyle.fontFamily || defaultFont;
+        if (/[\u0900-\u097F]/.test(text) && (!font || /times new roman|simsun|arial|calibri|helvetica/i.test(font))) {
+          font = defaultFont;
+        }
+
         runs.push({
           text,
-          fontFamily: currentStyle.fontFamily || defaultFont,
+          fontFamily: font,
           fontSize: currentStyle.fontSize || defaultFontSizePt,
           bold: currentStyle.bold || isMdHeading,
           italic: currentStyle.italic,
@@ -483,19 +513,18 @@ function extractDocumentGlobals(content: string, isDevanagari: boolean, options:
       }
     }
 
-    const ffMatch = /font-family:\s*['"]?([^;'"]+)['"]?/i.exec(styles);
+    const ffMatch = /font-family:\s*([^;]+)/i.exec(styles);
     if (ffMatch && ffMatch[1]) {
-      docFontFamily = ffMatch[1].trim();
+      const rawFf = ffMatch[1].replace(/&quot;|&apos;|['"]/gi, '').trim();
+      const firstFont = rawFf.split(',')[0].trim();
+      if (firstFont) {
+        docFontFamily = firstFont;
+      }
     }
 
-    const fsMatch = /font-size:\s*([\d.]+)(pt|px)?/i.exec(styles);
-    if (fsMatch) {
-      const val = parseFloat(fsMatch[1]);
-      const unit = (fsMatch[2] || 'pt').toLowerCase();
-      if (!isNaN(val) && val > 0) {
-        const pt = unit === 'px' ? val * 0.75 : val;
-        docFontSize = Math.round(pt * 2);
-      }
+    const parsedFs = parseFontSize(styles, docFontSize / 2);
+    if (parsedFs !== undefined && parsedFs >= 6) {
+      docFontSize = Math.round(parsedFs * 2);
     }
   }
 
@@ -703,7 +732,7 @@ export class ExportService {
         ? { width: 11906, height: 16838 } // A4: 210mm x 297mm
         : { width: 12240, height: 20160 }; // Legal: 8.5" x 14.0"
 
-    const sanitizedContent = sanitizeAndMarkupHtml(unescapeHtml(content || ''));
+    const sanitizedContent = sanitizeAndMarkupHtml(content || '');
     const blocks = extractBlocks(sanitizedContent);
     const children: (Paragraph | Table)[] = [];
 
