@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { LegalTemplate, FieldDefinition, TemplateCategory, TemplateLanguage, TemplateReferencePdf } from '../types';
 import { convertToDevanagari } from '../utils/transliterate';
+import { standardizePageBreaks } from '../utils/date';
 
 interface TemplateEditorModalProps {
   isOpen: boolean;
@@ -517,12 +518,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     const hasBlockElements = /<(p|table|tr|td|h[1-6]|ul|ol|li)[^>]*>/i.test(html);
 
     // Standardize all page break markers to placeholder
-    html = html
-      .replace(/\[page-?break\]/gi, '___PAGE_BREAK___')
-      .replace(/<!--\s*page-?break\s*-->/gi, '___PAGE_BREAK___')
-      .replace(/<hr[^>]*class=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '___PAGE_BREAK___')
-      .replace(/<hr[^>]*style=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '___PAGE_BREAK___')
-      .replace(/<div class="page-break"[^>]*>([\s\S]*?)<\/div>/gi, '___PAGE_BREAK___');
+    html = standardizePageBreaks(html, '___PAGE_BREAK___');
 
     html = html
       .replace(/<center>([\s\S]*?)<\/center>/gi, '<p style="text-align: center;">$1</p>')
@@ -892,7 +888,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
     } else {
       if (command === 'insertPageBreak') {
         // Insert page-break marker in code view at cursor position
-        const pbTag = '\n<div class="page-break" style="page-break-after:always;"></div>\n';
+        const pbTag = '\n<div class="page-break" style="page-break-after:always;break-after:page;"></div>\n<p><br></p>\n';
         const textarea = bodyTextAreaRef.current;
         if (textarea) {
           const start = textarea.selectionStart;

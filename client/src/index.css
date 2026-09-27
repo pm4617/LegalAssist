@@ -222,7 +222,14 @@ div[class*="copilotKit"] * {
    ============================================================ */
 .page-break,
 hr.page-break,
-div.page-break {
+div.page-break,
+[data-page-break="true"],
+[style*="break-after: page"],
+[style*="break-after:page"],
+[style*="page-break-after: always"],
+[style*="page-break-after:always"],
+[style*="page-break-before: always"],
+[style*="page-break-before:always"] {
   display: block;
   position: relative;
   box-sizing: content-box;
@@ -250,7 +257,14 @@ div.page-break {
 
 .page-break::after,
 hr.page-break::after,
-div.page-break::after {
+div.page-break::after,
+[data-page-break="true"]::after,
+[style*="break-after: page"]::after,
+[style*="break-after:page"]::after,
+[style*="page-break-after: always"]::after,
+[style*="page-break-after:always"]::after,
+[style*="page-break-before: always"]::after,
+[style*="page-break-before:always"]::after {
   content: "PAGE BREAK — END OF PAGE";
   position: absolute;
   top: 50%;
@@ -271,13 +285,23 @@ div.page-break::after {
 
 .document-page.paper-legal .page-break::after,
 .document-page.paper-legal hr.page-break::after,
-.document-page.paper-legal div.page-break::after {
+.document-page.paper-legal div.page-break::after,
+.document-page.paper-legal [data-page-break="true"]::after,
+.document-page.paper-legal [style*="page-break-after: always"]::after,
+.document-page.paper-legal [style*="page-break-after:always"]::after {
   content: "PAGE BREAK — END OF LEGAL PAGE (8.5\" × 14\")";
 }
 
 html.light .page-break,
 html.light hr.page-break,
-html.light div.page-break {
+html.light div.page-break,
+html.light [data-page-break="true"],
+html.light [style*="break-after: page"],
+html.light [style*="break-after:page"],
+html.light [style*="page-break-after: always"],
+html.light [style*="page-break-after:always"],
+html.light [style*="page-break-before: always"],
+html.light [style*="page-break-before:always"] {
   background-color: #cbd5e1 !important;
   border-top: 1px solid #94a3b8;
   border-bottom: 1px solid #94a3b8;
@@ -290,7 +314,14 @@ html.light div.page-break {
 
 html.light .page-break::after,
 html.light hr.page-break::after,
-html.light div.page-break::after {
+html.light div.page-break::after,
+html.light [data-page-break="true"]::after,
+html.light [style*="break-after: page"]::after,
+html.light [style*="break-after:page"]::after,
+html.light [style*="page-break-after: always"]::after,
+html.light [style*="page-break-after:always"]::after,
+html.light [style*="page-break-before: always"]::after,
+html.light [style*="page-break-before:always"]::after {
   background: #f1f5f9;
   color: #4338ca;
   border: 1px solid #818cf8;

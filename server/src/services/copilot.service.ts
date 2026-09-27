@@ -1329,11 +1329,16 @@ ${rawNotes}`
     promptText: string,
     templateId: string,
     apiKey?: string,
-    systemPromptOverride?: string
+    systemPromptOverride?: string,
+    templateTextOverride?: string
   ): Promise<{ facts: Partial<ClientFacts>; documentHtml: string; summary: string }> {
-    const template = templateService.getTemplate(templateId);
+    let template = templateService.getTemplate(templateId);
     if (!template) {
       throw new Error(`Template not found with ID: ${templateId}`);
+    }
+
+    if (templateTextOverride && typeof templateTextOverride === 'string' && templateTextOverride.trim()) {
+      template = { ...template, templateText: templateTextOverride };
     }
 
     const { facts, summary } = await this.extractFactsFromNotes(

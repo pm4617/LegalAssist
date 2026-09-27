@@ -345,7 +345,7 @@ app.post('/api/copilot/extract', async (req, res) => {
 // Generate Draft Document from Questionnaire / Event Prompt referencing active selected template
 app.post('/api/copilot/generate-from-prompt', async (req, res) => {
   try {
-    const { promptText, templateId, apiKey, systemPromptOverride } = req.body;
+    const { promptText, templateId, apiKey, systemPromptOverride, templateText } = req.body;
     if (!promptText) {
       return res.status(400).json({ error: 'promptText is required' });
     }
@@ -354,7 +354,7 @@ app.post('/api/copilot/generate-from-prompt', async (req, res) => {
     }
 
     const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
-    const result = await copilotService.generateDraftFromPrompt(promptText, templateId, geminiKey, systemPromptOverride);
+    const result = await copilotService.generateDraftFromPrompt(promptText, templateId, geminiKey, systemPromptOverride, templateText);
     res.json(result);
   } catch (err: any) {
     console.error('Generate from prompt error:', err);

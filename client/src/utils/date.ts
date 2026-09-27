@@ -271,14 +271,72 @@ export function renumberChoiceLines(html: string): string {
 }
 
 /**
+ * Checks whether a tag, string, or HTML snippet is or contains a page break marker.
+ */
+export function isPageBreakString(str: string): boolean {
+  if (!str) return false;
+  const s = str.toLowerCase();
+  return (
+    s.includes('page-break') ||
+    s.includes('pagebreak') ||
+    s.includes('break-after:page') ||
+    s.includes('break-after: page') ||
+    s.includes('break-before:page') ||
+    s.includes('break-before: page') ||
+    s.includes('page-break-after') ||
+    s.includes('page-break-before') ||
+    s.includes('[page-break') ||
+    s.includes('[pagebreak') ||
+    s.includes('[page_break') ||
+    s.includes('{page_break') ||
+    s.includes('{page-break') ||
+    s.includes('{pagebreak') ||
+    s.includes('<!-- pagebreak') ||
+    s.includes('<!-- page-break') ||
+    s.includes('data-page-break') ||
+    s.includes('court page break') ||
+    s.includes('___page_break___')
+  );
+}
+
+/**
+ * Standardizes all page break markers into a canonical, print- and screen-compatible page break element.
+ */
+export function standardizePageBreaks(
+  html: string,
+  replacement: string = '<div class="page-break" style="page-break-after:always;break-after:page;"></div><p><br></p>'
+): string {
+  if (!html) return '';
+  return html
+    .replace(/\[\s*(?:page[-_]?break|pagebreak)\s*\]/gi, replacement)
+    .replace(/\{\s*(?:page[-_]?break|pagebreak)\s*\}/gi, replacement)
+    .replace(/<!--\s*(?:page[-_]?break|pagebreak)\s*-->/gi, replacement)
+    .replace(/---\s*COURT\s+PAGE\s+BREAK\s*---/gi, replacement)
+    .replace(/<hr[^>]*class=["'][^"']*\bpage-break\b[^"']*["'][^>]*\/?>/gi, replacement)
+    .replace(/<hr[^>]*style=["'][^"']*(?:page-break|break-after:\s*page|break-before:\s*page)[^"']*["'][^>]*\/?>/gi, replacement)
+    .replace(/<br[^>]*style=["'][^"']*(?:page-break|break-after:\s*page|break-before:\s*page)[^"']*\/?>/gi, replacement)
+    .replace(/<div[^>]*class=["'][^"']*\bpage-break\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi, replacement)
+    .replace(/<div[^>]*style=["'][^"']*(?:page-break-after:\s*always|page-break-before:\s*always|break-after:\s*page|break-before:\s*page)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi, replacement)
+    .replace(/<div[^>]*data-page-break=["']?true["']?[^>]*>([\s\S]*?)<\/div>/gi, replacement)
+    .replace(/<p[^>]*class=["'][^"']*\bpage-break\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/gi, replacement)
+    .replace(/<p[^>]*style=["'][^"']*(?:page-break-after:\s*always|page-break-before:\s*always|break-after:\s*page|break-before:\s*page)[^"']*["'][^>]*>([\s\S]*?)<\/p>/gi, replacement);
+}
+
+/**
  * Removes orphan checklist bullets, brackets, or unentered choice options (e.g. "[ i ]", "[ iii ]",
  * "[ v ] इतर कारण :") where the placeholder was not provided or was replaced with spaces,
  * and sequentially re-indexes remaining items (e.g. [ ii ] becomes [ i ]).
+ * CRITICAL: Explicitly preserved page breaks are NEVER removed.
  */
 export function removeUnenteredChoiceLines(html: string): string {
   if (!html) return '';
   // 1. Strip empty option lines
   const cleaned = html.replace(/<(div|p|li)[^>]*>([\s\S]*?)<\/\1>/gi, (fullTag, tag, inner) => {
+    // CRITICAL: NEVER strip explicit page breaks as empty lines
+    if (isPageBreakString(fullTag) || isPageBreakString(inner)) {
+      return fullTag;
+    }
+
     const plainText = inner
       .replace(/<[^>]*>/g, '')
       .replace(/&nbsp;/gi, ' ')
@@ -414,6 +472,11 @@ export function cleanUnprovidedPartyBlocks(html: string, facts: Record<string, a
       // EXCLUDING paragraphs that also reference a provided party (e.g. joint verification)
       const pRe = /<(p|div|li)\b[^>]*>([\s\S]*?)<\/\1>/gi;
       result = result.replace(pRe, (fullTag, tagName, innerContent) => {
+        // CRITICAL: NEVER delete page breaks!
+        if (isPageBreakString(fullTag) || isPageBreakString(innerContent)) {
+          return fullTag;
+        }
+
         // Check if this paragraph contains placeholders for this unprovided party
         const partyKeyRegex = new RegExp(
           `\\{(?:party|applicant|accused|opponent|respondent|pakshakar)${i}(?:[a-zA-Z0-9_-]*)?\\}|\\{relation${i}\\}|\\{accused${i}(?:[a-zA-Z0-9_-]*)?\\}|\\{opponent${i}(?:[a-zA-Z0-9_-]*)?\\}`,
@@ -444,6 +507,10 @@ export function cleanUnprovidedPartyBlocks(html: string, facts: Record<string, a
         'gi'
       );
       result = result.replace(emptyNumberedShellRegex, (fullTag) => {
+        if (isPageBreakString(fullTag)) {
+          return fullTag;
+        }
+
         const textOnly = fullTag
           .replace(/<[^>]*>/g, '')
           .replace(/&nbsp;/gi, ' ')
@@ -464,6 +531,10 @@ export function cleanUnprovidedPartyBlocks(html: string, facts: Record<string, a
       // 4. Remove residual dead address lines ("रा." or "रा" with no address)
       const emptyAddressRegex = /<(p|div|li)\b[^>]*>(?:(?!<\/\1>)[\s\S])*?(?:(?:^|[>\s])(?:रा\.?|मु\.?|पत्ता|address))[\s\S]*?<\/\1>/gi;
       result = result.replace(emptyAddressRegex, (fullTag) => {
+        if (isPageBreakString(fullTag)) {
+          return fullTag;
+        }
+
         const textOnly = fullTag
           .replace(/<[^>]*>/g, '')
           .replace(/&nbsp;/gi, ' ')
@@ -491,6 +562,10 @@ export function cleanUnprovidedPartyBlocks(html: string, facts: Record<string, a
 
   // 6. Clean orphan signature lines with only dots / empty space (e.g. "<p align="right"><b> . . . . . . . . . . </b></p>")
   result = result.replace(/<(p|div)\b[^>]*align=["']?right["']?[^>]*>([\s\S]*?)<\/\1>/gi, (fullTag, tagName, inner) => {
+    if (isPageBreakString(fullTag) || isPageBreakString(inner)) {
+      return fullTag;
+    }
+
     const rawText = inner
       .replace(/<[^>]*>/g, '')
       .replace(/&nbsp;/gi, ' ')

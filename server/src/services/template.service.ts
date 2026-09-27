@@ -1,6 +1,6 @@
 import { templateStore } from './template-store.service.js';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult } from '../types/index.js';
-import { getMarathiTodayDate, removePlaceholdersWithSpaces, removeEmptyTableRows, cleanUnprovidedPartyBlocks, removeUnenteredChoiceLines, isValidPartyValue } from '../utils/date.utils.js';
+import { getMarathiTodayDate, removePlaceholdersWithSpaces, removeEmptyTableRows, cleanUnprovidedPartyBlocks, removeUnenteredChoiceLines, isValidPartyValue, standardizePageBreaks } from '../utils/date.utils.js';
 
 function formatToDDMMYYYY(val: string | undefined): string {
   if (!val || !val.trim()) return '';
@@ -64,7 +64,10 @@ export class TemplateService {
   }
 
   mergeTemplate(template: LegalTemplate, facts: ClientFacts): string {
-    let text = template.templateText;
+    let text = template.templateText || '';
+
+    // Standardize all page breaks so they are preserved across merges and cleanups
+    text = standardizePageBreaks(text);
 
     // Sanitize facts: convert dummy/generic placeholders to empty strings
     const cleanFacts: Record<string, any> = { ...facts };

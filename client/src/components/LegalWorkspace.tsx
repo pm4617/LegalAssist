@@ -71,7 +71,9 @@ import {
   removePlaceholdersWithSpaces,
   removeEmptyTableRows,
   removeUnenteredChoiceLines,
-  cleanUnprovidedPartyBlocks
+  cleanUnprovidedPartyBlocks,
+  standardizePageBreaks,
+  isPageBreakString
 } from '../utils/date';
 import { parseKeyValueNotes } from '../utils/keyValueParser';
 import { getQuestionnaireForTemplate } from '../utils/templateQuestionnaires';
@@ -412,13 +414,7 @@ Extraction Rules:
     const hasBlockElements = /<(p|table|tr|td|h[1-6]|ul|ol|li)[^>]*>/i.test(html);
 
     // Standardize all page break syntax to a placeholder
-    html = html
-      .replace(/\[page-?break\]/gi, '___PAGE_BREAK___')
-      .replace(/<!--\s*page-?break\s*-->/gi, '___PAGE_BREAK___')
-      .replace(/<hr[^>]*class=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '___PAGE_BREAK___')
-      .replace(/<hr[^>]*style=["'][^"']*page-break[^"']*["'][^>]*\/?>/gi, '___PAGE_BREAK___')
-      .replace(/--- COURT PAGE BREAK ---/g, '___PAGE_BREAK___')
-      .replace(/<div class="page-break"[^>]*>([\s\S]*?)<\/div>/gi, '___PAGE_BREAK___');
+    html = standardizePageBreaks(html, '___PAGE_BREAK___');
 
     html = html
       .replace(/<center>([\s\S]*?)<\/center>/gi, '<p style="text-align: center;">$1</p>')
@@ -427,19 +423,21 @@ Extraction Rules:
       .replace(/<p align=["']left["']>([\s\S]*?)<\/p>/gi, '<p style="text-align: left;">$1</p>')
       .replace(/<p align=["']justify["']>([\s\S]*?)<\/p>/gi, '<p style="text-align: justify;">$1</p>');
 
+    const pbReplacement = '<div class="page-break" style="page-break-after:always;break-after:page;"></div><p><br></p>';
+
     if (!hasBlockElements) {
       html = html
         .split('\n')
         .map((line) => {
           const trimmed = line.trim();
           if (trimmed === '___PAGE_BREAK___') {
-            return '<div class="page-break"></div><p><br></p>';
+            return pbReplacement;
           }
           return trimmed ? `<p>${trimmed}</p>` : '<p><br></p>';
         })
         .join('');
     } else {
-      html = html.replace(/___PAGE_BREAK___/g, '<div class="page-break"></div><p><br></p>');
+      html = html.replace(/___PAGE_BREAK___/g, pbReplacement);
     }
     return html;
   };
@@ -535,7 +533,7 @@ Extraction Rules:
       }
 
       if (command === 'insertPageBreak') {
-        const pbHtml = `<div class="page-break"></div><p><br></p>`;
+        const pbHtml = `<div class="page-break" style="page-break-after:always;break-after:page;"></div><p><br></p>`;
         document.execCommand('insertHTML', false, pbHtml);
       } else if (command === 'fontSizePt') {
         const pt = parseFloat(value);
@@ -1062,7 +1060,8 @@ Extraction Rules:
           promptText,
           templateId: activeTemplate.id,
           apiKey,
-          systemPromptOverride: systemPromptOverride !== DEFAULT_SYSTEM_PROMPT ? systemPromptOverride : undefined
+          systemPromptOverride: systemPromptOverride !== DEFAULT_SYSTEM_PROMPT ? systemPromptOverride : undefined,
+          templateText: activeTemplate.templateText
         })
       });
 
@@ -1085,9 +1084,12 @@ Extraction Rules:
           // 4. Clean orphan checklist lines / unentered options
           cleanHtml = removeUnenteredChoiceLines(cleanHtml);
 
-          setDocumentBody(cleanHtml);
+          // 5. Format document HTML with standardized page breaks and layout
+          const formattedHtml = formatDocToHtml(cleanHtml, activeTemplate);
+
+          setDocumentBody(formattedHtml);
           if (docRichEditorRef.current) {
-            docRichEditorRef.current.innerHTML = cleanHtml;
+            docRichEditorRef.current.innerHTML = formattedHtml;
           }
         }
         setPromptSuccessMsg(`✅ ${activeTemplate.title} मसुदा यशस्वीरित्या तयार झाला!`);
@@ -1113,9 +1115,12 @@ Extraction Rules:
       // 3. Clean orphan checklist lines / unentered options
       mergedHtml = removeUnenteredChoiceLines(mergedHtml);
 
-      setDocumentBody(mergedHtml);
+      // 4. Format document HTML with standardized page breaks and layout
+      const formattedHtml = formatDocToHtml(mergedHtml, activeTemplate);
+
+      setDocumentBody(formattedHtml);
       if (docRichEditorRef.current) {
-        docRichEditorRef.current.innerHTML = mergedHtml;
+        docRichEditorRef.current.innerHTML = formattedHtml;
       }
 
       setPromptSuccessMsg(`✅ ${activeTemplate.title} मसुदा स्थानिक प्रणालीद्वारे तयार झाला!`);
