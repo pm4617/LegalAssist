@@ -737,7 +737,7 @@ export class ExportService {
   <style>
     @page {
       size: ${pageSize};
-      margin: 1.2in 1.0in 1.0in 1.5in; /* Standard Court Margin with Left Binding Space */
+      margin: 1.0in 1.0in 1.0in 1.5in; /* Top: 1.0in, Right: 1.0in, Bottom: 1.0in, Left: 1.5in */
     }
     body {
       font-family: 'Noto Sans Devanagari', 'Mangal', 'Nirmala UI', 'Times New Roman', serif;
@@ -845,14 +845,21 @@ export class ExportService {
         const regBuffer = this.getDevanagariRegularBuffer();
         const boldBuffer = this.getDevanagariBoldBuffer();
 
+        const leftMargin = 108;   // 1.5 in (Court standard left binding space)
+        const rightMargin = 72;   // 1.0 in
+        const topMargin = 72;     // 1.0 in
+        const bottomMargin = 72;  // 1.0 in
+        const pageWidth = isLegal ? 612 : 595.28;
+        const usableWidth = pageWidth - leftMargin - rightMargin;
+
         const doc = new PDFDocument({
           font: regBuffer as any,
           size: isLegal ? 'LEGAL' : 'A4',
           margins: {
-            top: 86.4,    // 1.2 in
-            bottom: 72,   // 1.0 in
-            left: 108,    // 1.5 in (Court standard left binding space)
-            right: 72     // 1.0 in
+            top: topMargin,
+            bottom: bottomMargin,
+            left: leftMargin,
+            right: rightMargin
           },
           autoFirstPage: true,
           info: {
@@ -888,6 +895,7 @@ export class ExportService {
 
             if (isPageBreakString(trimmed)) {
               doc.addPage();
+              doc.x = leftMargin;
               continue;
             }
 
@@ -895,7 +903,9 @@ export class ExportService {
             if (trimmed.startsWith('------') || trimmed.includes('AFFIDAVIT') || trimmed.includes('प्रतिज्ञालेख')) {
               doc.moveDown(0.5);
               if (fontRegistered) doc.font('Devanagari-Bold');
-              doc.fontSize(13).text(trimmed, { align: 'center' });
+              doc.x = leftMargin;
+              doc.fontSize(13).text(trimmed, { width: usableWidth, align: 'center' });
+              doc.x = leftMargin;
               if (fontRegistered) doc.font('Devanagari');
               doc.fontSize(11.5).moveDown(0.4);
               continue;
@@ -914,10 +924,13 @@ export class ExportService {
             if (isHeader) {
               if (fontRegistered) doc.font('Devanagari-Bold');
               const isCentered = trimmed.startsWith('विषय') || trimmed.includes('यांचे कोर्टात') || i === 0;
+              doc.x = leftMargin;
               doc.fontSize(trimmed.startsWith('विषय') ? 12 : 12.5).text(trimmed, {
+                width: usableWidth,
                 align: isCentered ? 'center' : 'left',
                 lineGap: 3
               });
+              doc.x = leftMargin;
               if (fontRegistered) doc.font('Devanagari');
               doc.fontSize(11.5).moveDown(0.3);
               continue;
@@ -934,17 +947,22 @@ export class ExportService {
 
             if (isSignatureOrDate) {
               if (fontRegistered) doc.font('Devanagari');
-              doc.fontSize(11.5).text(trimmed, { align: 'left', lineGap: 2 });
+              doc.x = leftMargin;
+              doc.fontSize(11.5).text(trimmed, { width: usableWidth, align: 'left', lineGap: 2 });
+              doc.x = leftMargin;
               continue;
             }
 
             // Standard court paragraph
             if (fontRegistered) doc.font('Devanagari');
+            doc.x = leftMargin;
             doc.fontSize(11.5).text(trimmed, {
+              width: usableWidth,
               align: 'justify',
               indent: 20,
               lineGap: 4
             });
+            doc.x = leftMargin;
             doc.moveDown(0.25);
           }
 
@@ -958,6 +976,7 @@ export class ExportService {
         for (const block of blocks) {
           if (block.isPageBreak) {
             doc.addPage();
+            doc.x = leftMargin;
             continue;
           }
 
@@ -965,9 +984,29 @@ export class ExportService {
             const rows = extractTableData(block.tableHtml);
             if (rows.length > 0) {
               const numCols = Math.max(...rows.map(r => r.length), 1);
-              const pageWidth = isLegal ? 612 : 595.28;
-              const usableWidth = pageWidth - 108 - 72;
-              const colWidth = usableWidth / numCols;
+
+              // Smart proportional column widths allocation for court tables
+              let colWidths: number[] = [];
+              if (numCols === 4) {
+                // Typical court heir / party table: Serial No (40pt), Name (185pt), Age (45pt), Relation (162pt)
+                const w0 = 40;
+                const w2 = 45;
+                const remaining = usableWidth - w0 - w2;
+                const w1 = Math.round(remaining * 0.54);
+                const w3 = remaining - w1;
+                colWidths = [w0, w1, w2, w3];
+              } else if (numCols === 3) {
+                const w0 = 45;
+                const rem = usableWidth - w0;
+                const w1 = Math.round(rem * 0.58);
+                colWidths = [w0, w1, rem - w1];
+              } else if (numCols === 2) {
+                const w0 = Math.round(usableWidth * 0.35);
+                colWidths = [w0, usableWidth - w0];
+              } else {
+                const defaultCol = usableWidth / numCols;
+                colWidths = Array(numCols).fill(defaultCol);
+              }
 
               doc.moveDown(0.5);
               for (let r = 0; r < rows.length; r++) {
@@ -976,27 +1015,50 @@ export class ExportService {
                 const rowY = doc.y;
                 if (rowY > (isLegal ? 920 : 760)) {
                   doc.addPage();
+                  doc.x = leftMargin;
                 }
                 const startY = doc.y;
-                let maxHeight = 18;
+                let maxHeight = 20;
 
                 if (fontRegistered) doc.font(isHeader ? 'Devanagari-Bold' : 'Devanagari');
                 doc.fontSize(isHeader ? 10.5 : 10);
 
+                // Compute row height based on cell text wraps
                 for (let c = 0; c < row.length; c++) {
                   const cellText = row[c] || '';
-                  const cellX = 108 + c * colWidth;
-                  const textHeight = doc.heightOfString(cellText, { width: colWidth - 8 });
-                  if (textHeight + 6 > maxHeight) maxHeight = textHeight + 6;
-                  doc.text(cellText, cellX + 4, startY + 4, {
-                    width: colWidth - 8,
-                    align: 'left',
+                  const colW = colWidths[c] || (usableWidth / numCols);
+                  const textHeight = doc.heightOfString(cellText, { width: colW - 8 });
+                  if (textHeight + 8 > maxHeight) maxHeight = textHeight + 8;
+                }
+
+                // Render cell texts
+                let currentX = leftMargin;
+                for (let c = 0; c < row.length; c++) {
+                  const cellText = row[c] || '';
+                  const colW = colWidths[c] || (usableWidth / numCols);
+                  const isCenterCol = isHeader || c === 0 || (numCols === 4 && c === 2);
+                  doc.text(cellText, currentX + 4, startY + 4, {
+                    width: colW - 8,
+                    align: isCenterCol ? 'center' : 'left',
                     lineBreak: true
                   });
+                  currentX += colW;
                 }
-                doc.rect(108, startY, usableWidth, maxHeight).strokeColor('#888888').stroke();
+
+                // Render table row outer boundary
+                doc.rect(leftMargin, startY, usableWidth, maxHeight).strokeColor('#888888').stroke();
+
+                // Draw vertical grid lines between columns
+                let gridX = leftMargin;
+                for (let c = 0; c < row.length - 1; c++) {
+                  gridX += colWidths[c] || (usableWidth / numCols);
+                  doc.moveTo(gridX, startY).lineTo(gridX, startY + maxHeight).strokeColor('#bbbbbb').stroke();
+                }
+
                 doc.y = startY + maxHeight;
               }
+              // CRUCIAL: Reset doc.x back to the left binding margin so subsequent text never gets trapped in the right column
+              doc.x = leftMargin;
               doc.moveDown(0.5);
             }
             continue;
@@ -1041,12 +1103,16 @@ export class ExportService {
           const isCentered = align === 'center' || align === 'right';
           const textIndent = (isCentered || isBold) ? 0 : 20;
 
+          // Always ensure doc.x is reset to leftMargin and width is usableWidth
+          doc.x = leftMargin;
           doc.fontSize(fontSize);
           doc.text(rawText, {
+            width: usableWidth,
             align,
             indent: textIndent,
             lineGap: 4
           });
+          doc.x = leftMargin;
           doc.moveDown(block.isHeading ? 0.5 : 0.3);
         }
 
