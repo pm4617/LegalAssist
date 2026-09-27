@@ -842,7 +842,11 @@ export class ExportService {
     return new Promise<Buffer>((resolve, reject) => {
       try {
         const isLegal = options.paperSize !== 'a4';
+        const regBuffer = this.getDevanagariRegularBuffer();
+        const boldBuffer = this.getDevanagariBoldBuffer();
+
         const doc = new PDFDocument({
+          font: regBuffer as any,
           size: isLegal ? 'LEGAL' : 'A4',
           margins: {
             top: 86.4,    // 1.2 in
@@ -857,28 +861,10 @@ export class ExportService {
           }
         });
 
-        const regFontPath = this.findFontPath('NotoSansDevanagari-Regular.ttf');
-        const boldFontPath = this.findFontPath('NotoSansDevanagari-Bold.ttf') || regFontPath;
-
-        let fontRegistered = false;
-        try {
-          if (regFontPath) {
-            doc.registerFont('Devanagari', regFontPath);
-            doc.registerFont('Devanagari-Bold', boldFontPath || regFontPath);
-          } else {
-            // Self-contained in-memory fallback: guarantees flawless Marathi on Vercel/serverless
-            doc.registerFont('Devanagari', getEmbeddedDevanagariRegular());
-            doc.registerFont('Devanagari-Bold', getEmbeddedDevanagariBold());
-          }
-          doc.font('Devanagari');
-          fontRegistered = true;
-        } catch (e) {
-          console.warn('Failed to register Devanagari font in PDFKit:', e);
-        }
-
-        if (!fontRegistered) {
-          doc.font('Helvetica');
-        }
+        doc.registerFont('Devanagari', regBuffer);
+        doc.registerFont('Devanagari-Bold', boldBuffer);
+        doc.font('Devanagari');
+        const fontRegistered = true;
 
         const chunks: Buffer[] = [];
         doc.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -1069,6 +1055,26 @@ export class ExportService {
         reject(err);
       }
     });
+  }
+
+  private getDevanagariRegularBuffer(): Buffer {
+    const regFontPath = this.findFontPath('NotoSansDevanagari-Regular.ttf');
+    if (regFontPath) {
+      try {
+        return fs.readFileSync(regFontPath);
+      } catch {}
+    }
+    return getEmbeddedDevanagariRegular();
+  }
+
+  private getDevanagariBoldBuffer(): Buffer {
+    const boldFontPath = this.findFontPath('NotoSansDevanagari-Bold.ttf');
+    if (boldFontPath) {
+      try {
+        return fs.readFileSync(boldFontPath);
+      } catch {}
+    }
+    return getEmbeddedDevanagariBold();
   }
 
   private findFontPath(fontFilename: string): string | null {
