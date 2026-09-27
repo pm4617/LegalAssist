@@ -789,7 +789,9 @@ export class TelegramBotService {
 
       // 4. Generate & Upload PDF Buffer
       let pdfSent = false;
+      let pdfStage = 'निर्मिती (PDF Generation)';
       try {
+        pdfStage = 'PDF निर्मिती (Document Generation)';
         const pdfBuffer = await exportService.generatePdf({
           title: template.titleMr || template.title,
           content: mergedHtml,
@@ -797,6 +799,11 @@ export class TelegramBotService {
           engine: 'node'
         });
 
+        if (!pdfBuffer || pdfBuffer.length === 0) {
+          throw new Error('Generated PDF buffer is empty (0 bytes).');
+        }
+
+        pdfStage = 'Telegram दस्तऐवज अपलोड (sendDocument)';
         await this.sendDocument(
           chatId,
           pdfBuffer,
@@ -806,8 +813,12 @@ export class TelegramBotService {
         );
         pdfSent = true;
       } catch (pdfErr: any) {
-        console.error('❌ Telegram PDF export or send failed:', pdfErr);
-        await this.sendMessage(chatId, `ℹ️ <i>PDF तयार किंवा पाठवताना अडचण आली, परंतु वरील Word (.docx) फाइल यशस्वीरित्या पाठवली आहे.</i>`);
+        console.error(`❌ Telegram PDF error during ${pdfStage}:`, pdfErr);
+        const errDetail = pdfErr?.message || String(pdfErr || 'Unknown error');
+        await this.sendMessage(
+          chatId,
+          `⚠️ <b>PDF एरर तपशील (${escapeHtml(pdfStage)}):</b>\n<code>${escapeHtml(errDetail.slice(0, 800))}</code>\n\nℹ️ <i>वरील Word (.docx) फाइल यशस्वीरित्या पाठवली आहे.</i>`
+        );
       }
 
       await this.sendMessage(

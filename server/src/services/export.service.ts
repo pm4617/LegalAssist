@@ -8,6 +8,7 @@ import {
   Document, Paragraph, TextRun, AlignmentType, LineRuleType, Packer, PageBreak,
   Table, TableRow, TableCell, BorderStyle, WidthType, VerticalAlign,
 } from 'docx';
+import { getEmbeddedDevanagariRegular, getEmbeddedDevanagariBold } from '../assets/fonts/embedded-fonts.js';
 
 export interface PdfExportOptions {
   title: string;
@@ -860,15 +861,19 @@ export class ExportService {
         const boldFontPath = this.findFontPath('NotoSansDevanagari-Bold.ttf') || regFontPath;
 
         let fontRegistered = false;
-        if (regFontPath) {
-          try {
+        try {
+          if (regFontPath) {
             doc.registerFont('Devanagari', regFontPath);
             doc.registerFont('Devanagari-Bold', boldFontPath || regFontPath);
-            doc.font('Devanagari');
-            fontRegistered = true;
-          } catch (e) {
-            console.warn('Failed to register Devanagari font in PDFKit:', e);
+          } else {
+            // Self-contained in-memory fallback: guarantees flawless Marathi on Vercel/serverless
+            doc.registerFont('Devanagari', getEmbeddedDevanagariRegular());
+            doc.registerFont('Devanagari-Bold', getEmbeddedDevanagariBold());
           }
+          doc.font('Devanagari');
+          fontRegistered = true;
+        } catch (e) {
+          console.warn('Failed to register Devanagari font in PDFKit:', e);
         }
 
         if (!fontRegistered) {
