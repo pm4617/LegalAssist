@@ -178,7 +178,11 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
 वकिलांचे नाव: 
 वकिलांचे शिक्षण: 
 सनद क्रमांक (Enroll No.): 
-मोबाईल क्रमांक: `,
+मोबाईल क्रमांक: 
+
+६. वंशावृक्ष / वंशावळ (Family Tree / Pedigree - optional):
+मूळ पुरुष / कुटुंब प्रमुख: 
+वारसदार शाखा: `,
       samplePrompt: `वारस दाखला/Heirship Certificate 
 न्यायालयाचे ठीकाण (Court Place): चोपडा, जि. जळगाव
 
@@ -232,7 +236,11 @@ export function getQuestionnaireForTemplate(template?: LegalTemplate | null): Qu
 वकिलांचे नाव: ॲड. सचिन मधुकर महाजन
 वकिलांचे शिक्षण: B.Com., LL.B.
 सनद क्रमांक (Enroll No.): MAH/1234/2012
-मोबाईल क्रमांक: ७७९६७४२५५५`
+मोबाईल क्रमांक: ७७९६७४२५५५
+
+६. वंशावृक्ष / वंशावळ (Family Tree):
+A) धर्मेंद्र विजय महाजन (मयत)
+वारसदार: सौ. सुनिता (पत्नी), राहुल (मुलगा), स्नेहल (मुलगी), सौ. शांताबाई (आई)`
     };
   }
 

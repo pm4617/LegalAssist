@@ -486,6 +486,19 @@ app.post('/api/copilot/draft-clause', async (req, res) => {
   }
 });
 
+// AI Court Family Tree (वंशावृक्ष / वंशावळ) Generator
+app.post('/api/copilot/family-tree', async (req, res) => {
+  try {
+    const { input, apiKey } = req.body;
+    const geminiKey = apiKey || (req.headers['x-gemini-api-key'] as string) || process.env.GEMINI_API_KEY;
+    const result = await copilotService.generateFamilyTree({ input, apiKey: geminiKey });
+    res.json(result);
+  } catch (err: any) {
+    console.error('AI Family Tree error:', err);
+    res.status(500).json({ error: formatGeminiErrorMessage(err) });
+  }
+});
+
 // --- CopilotKit Runtime v2 Protocol Support ---
 const runtimeInfoData = {
   specificationVersion: 'v1',

@@ -1,6 +1,7 @@
 import { templateStore } from './template-store.service.js';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult } from '../types/index.js';
 import { getMarathiTodayDate, removePlaceholdersWithSpaces, removeEmptyTableRows, cleanUnprovidedPartyBlocks, removeUnenteredChoiceLines, isValidPartyValue, standardizePageBreaks } from '../utils/date.utils.js';
+import { familyTreeService } from './family-tree.service.js';
 
 function formatToDDMMYYYY(val: string | undefined): string {
   if (!val || !val.trim()) return '';
@@ -201,6 +202,24 @@ export class TemplateService {
       // {todaysDate} variable shall be always filled with current system date in DD-MON-YYYY format in marathi
       todaysDate: getMarathiTodayDate(),
     };
+
+    // Family Tree resolution for {familyTree} / {वंशावळ} / {वंशावृक्ष}
+    let familyTreeHtml = '';
+    if (cleanFacts.familyTree) {
+      familyTreeHtml = familyTreeService.renderFamilyTreeHtml(cleanFacts.familyTree);
+    } else {
+      const hasDeceasedOrHeirs = !!(cleanFacts.deceasedName || cleanFacts.fatherOrHusbandName || cleanFacts.party1Name || cleanFacts.heir1Name || cleanFacts.वारस1);
+      if (hasDeceasedOrHeirs) {
+        const generated = familyTreeService.generateFallbackFromFacts(cleanFacts);
+        familyTreeHtml = familyTreeService.renderFamilyTreeHtml(generated);
+      }
+    }
+    if (familyTreeHtml) {
+      replacements.familyTree = familyTreeHtml;
+      replacements.family_tree = familyTreeHtml;
+      replacements.वंशावळ = familyTreeHtml;
+      replacements.वंशावृक्ष = familyTreeHtml;
+    }
 
     // Replace any other custom facts if non-empty
     for (const [key, val] of Object.entries(cleanFacts)) {

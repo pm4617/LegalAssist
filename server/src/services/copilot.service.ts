@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { ClientFacts } from '../types/index.js';
 import { templateService } from './template.service.js';
 import { getMarathiTodayDate, isValidPartyValue } from '../utils/date.utils.js';
+import { familyTreeService } from './family-tree.service.js';
 
 export interface CopilotChatOptions {
   message: string;
@@ -1745,6 +1746,10 @@ CRITICAL RULES:
       console.error('Autocomplete error:', err);
       return '';
     }
+  }
+
+  async generateFamilyTree(options: { input?: string | Record<string, any>; apiKey?: string }): Promise<{ treeData: any; html: string; summary: string }> {
+    return familyTreeService.generateWithAi(options.input || '', options.apiKey);
   }
 }
 

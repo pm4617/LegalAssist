@@ -57,12 +57,14 @@ import {
   ZoomOut,
   ArrowUp,
   ArrowDown,
+  GitFork,
 } from 'lucide-react';
 import { LegalTemplate, ClientFacts, ComplianceCheckResult, DocumentDraft } from '../types';
 import { SettingsModal } from './SettingsModal';
 import { ClientNotesModal } from './ClientNotesModal';
 import { TemplateManagerModal } from './TemplateManagerModal';
 import { FormWizardModal } from './FormWizardModal';
+import { FamilyTreeModal } from './FamilyTreeModal';
 import { convertToDevanagari } from '../utils/transliterate';
 import {
   formatToDDMMYYYY,
@@ -107,6 +109,7 @@ export const LegalWorkspace: React.FC<LegalWorkspaceProps> = ({
   const [copied, setCopied] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [isNotesModalOpen, setIsNotesModalOpen] = useState<boolean>(false);
+  const [isFamilyTreeModalOpen, setIsFamilyTreeModalOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isTemplateManagerOpen, setIsTemplateManagerOpen] = useState<boolean>(false);
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
@@ -1793,6 +1796,41 @@ Always include: one to fill client details, one to audit compliance, one templat
     }
   };
 
+  // Insert or replace family tree in draft and client facts
+  const handleInsertFamilyTree = (treeHtml: string, treeData?: any) => {
+    const newFacts = {
+      ...facts,
+      familyTree: treeHtml,
+      familyTreeData: treeData,
+    };
+    setFacts(newFacts);
+
+    const hasPlaceholder =
+      documentBody.includes('{familyTree}') ||
+      documentBody.includes('{family_tree}') ||
+      documentBody.includes('{वंशावळ}') ||
+      documentBody.includes('{वंशावृक्ष}');
+
+    if (hasPlaceholder) {
+      const updated = documentBody
+        .replace(/\{familyTree\}/gi, treeHtml)
+        .replace(/\{family_tree\}/gi, treeHtml)
+        .replace(/\{वंशावळ\}/gi, treeHtml)
+        .replace(/\{वंशावृक्ष\}/gi, treeHtml);
+      setDocumentBody(updated);
+      if (docRichEditorRef.current) {
+        docRichEditorRef.current.innerHTML = updated;
+      }
+    } else if (docRichEditorRef.current) {
+      const existing = docRichEditorRef.current.innerHTML;
+      const combined = existing + '\n' + treeHtml;
+      docRichEditorRef.current.innerHTML = combined;
+      setDocumentBody(combined);
+    } else {
+      setDocumentBody((prev) => prev + '\n' + treeHtml);
+    }
+  };
+
   // Export to Word .docx
   const handleExportDocx = async () => {
     setIsExporting(true);
@@ -2328,6 +2366,16 @@ Always include: one to fill client details, one to audit compliance, one templat
           >
             <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
             <span className="hidden sm:inline">Extract Notes</span>
+          </button>
+
+          {/* Quick AI Family Tree (वंशावळ / वंशावृक्ष) */}
+          <button
+            onClick={() => setIsFamilyTreeModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-600/20 dark:hover:bg-emerald-600/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700/50 rounded-xl text-xs sm:text-sm font-medium transition shadow-sm"
+            title="Generate Court Family Tree / Pedigree (वंशावृक्ष / वंशावळ)"
+          >
+            <GitFork className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <span className="hidden sm:inline">वंशावळ (Family Tree)</span>
           </button>
 
           {/* Export Word (.docx) */}
@@ -3607,6 +3655,14 @@ Always include: one to fill client details, one to audit compliance, one templat
         isLoading={isExtracting}
         activeTemplate={activeTemplate}
         facts={facts}
+      />
+
+      <FamilyTreeModal
+        isOpen={isFamilyTreeModalOpen}
+        onClose={() => setIsFamilyTreeModalOpen(false)}
+        onInsertTree={handleInsertFamilyTree}
+        initialFacts={facts}
+        apiKey={apiKey}
       />
 
       <SettingsModal

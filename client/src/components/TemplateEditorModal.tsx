@@ -406,7 +406,7 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
       'marriageDate', 'marriagePlace', 'separationDate', 'separationYears',
       'childrenDetails', 'alimonyAmount', 'alimonyWords', 'effectiveDate',
       'purpose', 'termYears', 'governingLaw', 'disputeCity', 'outstandingAmount',
-      'invoiceDetails', 'noticeDays', 'advocateName', 'advocateAddress'
+      'invoiceDetails', 'noticeDays', 'advocateName', 'advocateAddress', 'familyTree'
     ];
     const currentCustomKeys = fields.map((f) => f.key).filter((k) => k && k.trim());
 
@@ -437,6 +437,10 @@ export const TemplateEditorModal: React.FC<TemplateEditorModalProps> = ({
       {
         title: 'Court & Filing',
         items: ['courtCity', 'courtName', 'hmpNo', 'caseYear'],
+      },
+      {
+        title: 'Family Tree & Heirs (वंशावृक्ष)',
+        items: ['familyTree', 'deceasedName', 'deceasedDate', 'placeofDeath', 'mulage', 'mulagi'],
       },
       {
         title: 'Party 1 (Husband / Deponent)',
