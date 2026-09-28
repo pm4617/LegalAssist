@@ -142,18 +142,10 @@ function sanitizeAndMarkupHtml(raw: string): string {
     return `<${collapsed}>`;
   });
 
-  s = s
-    .replace(/<span[^>]*\blang=["'][^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '$1')
-    .replace(/<span[^>]*\bmso-[a-z-]+:[^>]*>([\s\S]*?)<\/span>/gi, '$1')
-    .replace(/<span[^>]*font-family:[^>]*>([\s\S]*?)<\/span>/gi, '$1');
-
-  s = s
-    .replace(/<span[^>]*font-weight:\s*bold[^>]*>([\s\S]*?)<\/span>/gi, '<b>$1</b>')
-    .replace(/<span[^>]*font-style:\s*italic[^>]*>([\s\S]*?)<\/span>/gi, '<i>$1</i>')
-    .replace(/<span[^>]*text-decoration:\s*underline[^>]*>([\s\S]*?)<\/span>/gi, '<u>$1</u>');
-
-  s = s.replace(/<[^>]*$/gm, '');
-  s = s.replace(/^[^<]*>/gm, '');
+  // Strip HTML comments (e.g. Word conditionals <!--[if !supportLists]-->)
+  s = s.replace(/<!--[\s\S]*?-->/g, '');
+  // Clean Word XML tags like <o:p></o:p>
+  s = s.replace(/<\/?o:p[^>]*>/gi, '');
 
   return s;
 }
@@ -259,7 +251,7 @@ function parseParagraphToRuns(
         currentStyle = styleStack[styleStack.length - 1];
       }
     } else {
-      let text = token.replace(/<[^>]*$/g, '').replace(/^[^<]*>/g, '');
+      let text = token;
 
       if (isMdHeading) {
         text = text.replace(/^#+\s+/, '');
