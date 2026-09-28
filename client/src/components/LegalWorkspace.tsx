@@ -373,6 +373,17 @@ Extraction Rules:
     factsMap.todayDate = marathiToday;
     factsMap.todaysdate = marathiToday;
 
+    if (currentFacts?.familyTree && typeof currentFacts.familyTree === 'string') {
+      factsMap.familyTree = currentFacts.familyTree;
+      factsMap.family_tree = currentFacts.familyTree;
+      factsMap.वंशावळ = currentFacts.familyTree;
+      factsMap.वंशावृक्ष = currentFacts.familyTree;
+
+      // Cleanly replace any enclosing paragraph containing only {familyTree} / {वंशावळ} / {वंशावृक्ष}
+      const pFamilyTreeRegex = /<p\b[^>]*>(?:<span\b[^>]*>|<font\b[^>]*>|<b>|<strong>|\s)*(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)(?:<\/span>|<\/font>|<\/b>|<\/strong>|\s)*<\/p>/gi;
+      result = result.replace(pFamilyTreeRegex, () => currentFacts.familyTree as string);
+    }
+
     for (const [key, value] of Object.entries(factsMap)) {
       if (!key || typeof value !== 'string') continue;
       const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -380,15 +391,21 @@ Extraction Rules:
 
       // Match {key} even if separated by inner HTML tags, HTML entities (&lbrace; &#123;) or styling
       const tagRegex = new RegExp(`(?:\\{|&lbrace;|&#123;|&#x7b;)(?:\\s*<[^>]*>)*\\s*${charPattern}\\s*(?:\\s*<[^>]*>)*(?:\\}|&rbrace;|&#125;|&#x7d;)`, 'gi');
-      result = result.replace(tagRegex, value);
+      result = result.replace(tagRegex, () => value);
 
       const literalRegex = new RegExp(`\\{${escapedKey}\\}`, 'gi');
-      result = result.replace(literalRegex, value);
+      result = result.replace(literalRegex, () => value);
     }
 
     // Direct replacement of {todaysDate} variations to ensure English numbers
     result = result.replace(/\{(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\}/gi, marathiToday);
     result = result.replace(/(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi, marathiToday);
+
+    // Safeguard: If familyTree is present in facts, ensure any remaining placeholder variants are replaced
+    if (currentFacts?.familyTree && typeof currentFacts.familyTree === 'string') {
+      const remainingTreeRegex = /(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi;
+      result = result.replace(remainingTreeRegex, () => currentFacts.familyTree as string);
+    }
 
     if (cleanUnpopulatedPlaceholders) {
       // 0. Clean unprovided party blocks, paragraphs, and attributes first
@@ -406,12 +423,12 @@ Extraction Rules:
     return result;
   };
 
-  const formatDocToHtml = (rawText: string, tmpl?: LegalTemplate): string => {
+  const formatDocToHtml = (rawText: string, tmpl?: LegalTemplate, factsToUse?: ClientFacts): string => {
     if (!rawText) return '';
     let html = unescapeAllEntities(rawText);
 
     // Live replace all placeholders in HTML (courtName, courtCity, etc.)
-    html = replacePlaceholdersInHtml(html, facts, tmpl);
+    html = replacePlaceholdersInHtml(html, factsToUse || facts, tmpl);
 
     // Check if original content already contains block elements (excluding page breaks)
     const hasBlockElements = /<(p|table|tr|td|h[1-6]|ul|ol|li)[^>]*>/i.test(html);
@@ -1088,7 +1105,7 @@ Extraction Rules:
           cleanHtml = removeUnenteredChoiceLines(cleanHtml);
 
           // 5. Format document HTML with standardized page breaks and layout
-          const formattedHtml = formatDocToHtml(cleanHtml, activeTemplate);
+          const formattedHtml = formatDocToHtml(cleanHtml, activeTemplate, effectiveFacts);
 
           setDocumentBody(formattedHtml);
           if (docRichEditorRef.current) {
@@ -1119,7 +1136,7 @@ Extraction Rules:
       mergedHtml = removeUnenteredChoiceLines(mergedHtml);
 
       // 4. Format document HTML with standardized page breaks and layout
-      const formattedHtml = formatDocToHtml(mergedHtml, activeTemplate);
+      const formattedHtml = formatDocToHtml(mergedHtml, activeTemplate, mergedFacts);
 
       setDocumentBody(formattedHtml);
       if (docRichEditorRef.current) {

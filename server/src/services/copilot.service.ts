@@ -448,6 +448,34 @@ export class CopilotService {
         (context.documentBody || '').match(/\{[a-zA-Z0-9_-]+\}/g) || []
       ));
 
+      // Detect {familyTree} placeholder specifically
+      const hasFamilyTreePlaceholder = (context.documentBody || '').includes('{familyTree}')
+        || (context.documentBody || '').includes('{family_tree}')
+        || (context.documentBody || '').includes('{\u0935\u0902\u0936\u093e\u0935\u0933}')
+        || (context.documentBody || '').includes('{\u0935\u0902\u0936\u093e\u0935\u0943\u0915\u094d\u0937}');
+
+      const familyTreeRule = hasFamilyTreePlaceholder ? `
+=======================================================
+RULE 3: FAMILY TREE / \u0935\u0902\u0936\u093e\u0935\u0933 GENERATION (TRIGGERED BECAUSE {familyTree} PLACEHOLDER IS PRESENT IN THE DOCUMENT):
+=======================================================
+The document contains a {familyTree} placeholder that MUST be replaced with a diagrammatic Maharashtra Court family tree (\u0935\u0902\u0936\u093e\u0935\u0933).
+
+WHEN THE USER PROVIDES family/heir information (names, relations, deaths, ages) OR asks to generate the family tree:
+
+1. Extract ALL family member information from the user's message AND from Client Facts.
+2. Write a concise, structured Marathi narrative summarizing the complete family hierarchy.
+3. Output ONLY the narrative (no JSON, no HTML) between these delimiters:
+[FAMILY_TREE_NOTES_START]
+<Marathi family narrative here - list root ancestor, spouse, all sons/daughters with statuses, and each deceased person's heirs>
+[FAMILY_TREE_NOTES_END]
+
+Then return a brief confirmation sentence explaining you have generated the family tree.
+
+EXAMPLE OUTPUT:
+[FAMILY_TREE_NOTES_START]
+\u0915\u0948. \u091c\u0917\u0928\u094d\u0928\u093e\u0925 \u0938\u0916\u093e\u0930\u093e\u092e \u091a\u094c\u0927\u0930\u0940 (\u092e\u092f\u0924) \u092f\u093e\u0902\u091a\u0940 \u092a\u0924\u094d\u0928\u0940 \u0915\u0948. \u0930\u093e\u0927\u093e\u092c\u093e\u0908 (\u092e\u092f\u0924). \u092e\u0941\u0932\u0947: \u0930\u092e\u0947\u0936, \u0935\u0938\u0902\u0924, \u0928\u0940\u0932\u0947\u0936, \u0938\u0941\u092d\u093e\u0937. \u092e\u0941\u0932\u0940: \u092e\u0940\u0928\u093e\u092c\u093e\u0908, \u0906\u0936\u093e\u092c\u093e\u0908.\n\u0915\u0948. \u0930\u092e\u0947\u0936 (\u092e\u092f\u0924) \u092f\u093e\u0902\u091a\u0947 \u0935\u093e\u0930\u0938: \u092a\u0924\u094d\u0928\u0940 \u092e\u0902\u0926\u093e\u092c\u093e\u0908 (\u0939\u092f\u093e\u0924, \u0935\u092f \u0969\u0968), \u092e\u0941\u0932\u0917\u093e \u0915\u0948. \u092d\u0942\u0937\u0923 (\u092e\u092f\u0924).\n\u0915\u0948. \u0935\u0938\u0902\u0924 (\u092e\u092f\u0924) \u092f\u093e\u0902\u091a\u0947 \u0935\u093e\u0930\u0938: \u092a\u0924\u094d\u0928\u0940 \u0906\u0936\u093e\u092c\u093e\u0908 (\u092e\u092f\u0924), \u092e\u0941\u0932\u0917\u093e \u0905\u092e\u094b\u0932 (\u0939\u092f\u093e\u0924, \u0935\u092f \u0969\u096c), \u092e\u0941\u0932\u0917\u0940 \u092e\u0928\u093f\u0937\u093e (\u0939\u092f\u093e\u0924, \u0935\u092f \u0969\u0969).\n[FAMILY_TREE_NOTES_END]
+\u0935\u0902\u0936\u093e\u0935\u0933 \u092f\u0936\u0938\u094d\u0935\u0940\u0930\u093f\u0924\u094d\u092f\u093e \u0924\u092f\u093e\u0930 \u0915\u0930\u0923\u094d\u092f\u093e\u0924 \u0906\u0932\u0940.` : '';
+
       const systemPrompt = `You are JurisCopilot, an expert AI Legal Assistant for Indian court petitions and agreements.
 Active template: ${context.templateTitle || 'Legal Document'}
 Client Facts: ${JSON.stringify(context.clientFacts || {})}
@@ -507,7 +535,7 @@ RULE 2: STRUCTURAL DOCUMENT EDITING RULES (apply ONLY when user explicitly asks 
 [REVISED_DOCUMENT_START]
 <complete updated HTML here>
 [REVISED_DOCUMENT_END]
-5. Use formal Maharashtra court Marathi terminology for Marathi documents.`;
+5. Use formal Maharashtra court Marathi terminology for Marathi documents.${familyTreeRule}`;
 
       // Check for associated reference PDF attachment for this template
       let referencePdfPart: any = null;
@@ -585,7 +613,45 @@ You MUST refer to this attached reference PDF to:
           }
         }
 
-        // 2. FULL REVISION OUTPUT HANDLER
+        // 2. FAMILY TREE GENERATION HANDLER
+        // Triggered when AI returns [FAMILY_TREE_NOTES_START]...[FAMILY_TREE_NOTES_END]
+        if (text.includes('[FAMILY_TREE_NOTES_START]') && text.includes('[FAMILY_TREE_NOTES_END]')) {
+          const notesMatch = text.match(/\[FAMILY_TREE_NOTES_START\]([\s\S]*?)\[FAMILY_TREE_NOTES_END\]/);
+          if (notesMatch && notesMatch[1]) {
+            try {
+              const familyNotes = notesMatch[1].trim();
+              // Generate the visual family tree HTML from the extracted notes
+              // Use the outer apiKey parameter (already validated Gemini key from the request)
+              const treeApiKey = apiKey || process.env.GEMINI_API_KEY || '';
+              const treeResult = await familyTreeService.generateWithAi(familyNotes, treeApiKey);
+              const treeHtml = treeResult.html;
+
+              if (treeHtml) {
+                // Replace {familyTree} / {वंशावळ} / {वंशावृक्ष} in the current document body
+                let updatedBody = context.documentBody || '';
+                updatedBody = updatedBody
+                  .replace(/\{familyTree\}/gi, treeHtml)
+                  .replace(/\{family_tree\}/gi, treeHtml)
+                  .replace(/\{\u0935\u0902\u0936\u093e\u0935\u0933\}/gi, treeHtml)
+                  .replace(/\{\u0935\u0902\u0936\u093e\u0935\u0943\u0915\u094d\u0937\}/gi, treeHtml);
+
+                // Also handle tag-split placeholders like {<span>familyTree</span>}
+                updatedBody = updatedBody.replace(
+                  /(?:\{|&lbrace;|&#123;|&#x7b;)(?:\s*<[^>]*>)*\s*(?:familyTree|family_tree|\u0935\u0902\u0936\u093e\u0935\u0933|\u0935\u0902\u0936\u093e\u0935\u0943\u0915\u094d\u0937)\s*(?:\s*<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi,
+                  treeHtml
+                );
+
+                const confirmText = text.replace(/\[FAMILY_TREE_NOTES_START\][\s\S]*?\[FAMILY_TREE_NOTES_END\]/g, '').trim()
+                  || '\u0935\u0902\u0936\u093e\u0935\u0933 \u092f\u0936\u0938\u094d\u0935\u0940\u0930\u093f\u0924\u094d\u092f\u093e \u0924\u092f\u093e\u0930 \u0915\u0930\u0923\u094d\u092f\u093e\u0924 \u0906\u0932\u0940 \u0906\u0923\u093f {familyTree} \u0935\u094d\u0939\u0947\u0930\u093f\u090f\u092c\u0932 \u0926\u0938\u094d\u0924\u0910\u0935\u091c\u093e\u0924 \u0938\u092e\u093e\u0935\u093f\u0937\u094d\u091f \u0915\u0930\u0923\u094d\u092f\u093e\u0924 \u0906\u0932\u0947.';
+                return `${confirmText}\n\n[REVISED_DOCUMENT_START]\n${updatedBody.trim()}\n[REVISED_DOCUMENT_END]`;
+              }
+            } catch (treeErr: any) {
+              console.error('Family tree generation from copilot failed:', treeErr.message);
+            }
+          }
+        }
+
+        // 3. FULL REVISION OUTPUT HANDLER
         if (text.includes('[REVISED_DOCUMENT_START]') && text.includes('[REVISED_DOCUMENT_END]')) {
           const match = text.match(/\[REVISED_DOCUMENT_START\]([\s\S]*?)\[REVISED_DOCUMENT_END\]/);
           if (match && match[1]) {
@@ -1342,20 +1408,67 @@ ${rawNotes}`
       template = { ...template, templateText: templateTextOverride };
     }
 
-    const { facts, summary } = await this.extractFactsFromNotes(
-      promptText,
-      apiKey,
-      templateId,
-      template.title,
-      template.fields,
-      systemPromptOverride
-    );
+    const rawTemplateText = template.templateText || '';
+    const hasFamilyTreeVar =
+      /\{(?:familyTree|family_tree|familyTreeHtml|वंशावळ|वंशावृक्ष)\}/i.test(rawTemplateText) ||
+      /(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|familyTreeHtml|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/i.test(rawTemplateText) ||
+      (Array.isArray(template.fields) && template.fields.some((f: any) => /^(?:familyTree|family_tree|familyTreeHtml|वंशावळ|वंशावृक्ष)$/i.test(f.key || '')));
+
+    let treePromise: Promise<{ treeData: any; html: string; summary: string } | null> | null = null;
+    if (hasFamilyTreeVar && promptText.trim()) {
+      console.log(`🌳 [Generate Pleading] Detected {familyTree} variable in template "${template.title}". Triggering AI Family Tree generation...`);
+      treePromise = familyTreeService.generateWithAi(promptText, apiKey).catch(err => {
+        console.warn('⚠️ [Generate Pleading] AI family tree generation failed, falling back to Marathi narrative parser:', err?.message);
+        try {
+          const fbData = familyTreeService.parseMarathiNarrative(promptText);
+          const fbHtml = familyTreeService.renderFamilyTreeHtml(fbData);
+          return {
+            treeData: fbData,
+            html: fbHtml,
+            summary: 'वंशावळ तयार करण्यात आली.'
+          };
+        } catch {
+          return null;
+        }
+      });
+    }
+
+    const [{ facts, summary }, treeResult] = await Promise.all([
+      this.extractFactsFromNotes(
+        promptText,
+        apiKey,
+        templateId,
+        template.title,
+        template.fields,
+        systemPromptOverride
+      ),
+      treePromise ? treePromise : Promise.resolve(null)
+    ]);
 
     // Ensure {todaysDate} variable is always filled with current system date in DD-MON-YYYY format in Marathi
     facts.todaysDate = getMarathiTodayDate();
 
+    if (treeResult && treeResult.html) {
+      facts.familyTree = treeResult.html;
+      facts.familyTreeNotes = promptText;
+      facts.familyTreeData = treeResult.treeData;
+      console.log(`✅ [Generate Pleading] Family tree successfully attached to draft facts (${treeResult.treeData?.branches?.length || 0} branches).`);
+    } else if (hasFamilyTreeVar && promptText) {
+      facts.familyTreeNotes = promptText;
+    }
+
     // Merge template with extracted facts (also cleans unpopulated placeholders and empty table rows)
-    const documentHtml = templateService.mergeTemplate(template, facts);
+    let documentHtml = templateService.mergeTemplate(template, facts);
+
+    // Final safeguard: Ensure {familyTree} in documentHtml is definitely replaced if tree was generated
+    if (facts.familyTree && typeof facts.familyTree === 'string') {
+      const treeHtml = facts.familyTree;
+      const pTreeRegex = /<p\b[^>]*>(?:<span\b[^>]*>|<font\b[^>]*>|<b>|<strong>|\s)*(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|familyTreeHtml|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)(?:<\/span>|<\/font>|<\/b>|<\/strong>|\s)*<\/p>/gi;
+      documentHtml = documentHtml.replace(pTreeRegex, () => treeHtml);
+
+      const remainingTreeRegex = /(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|familyTreeHtml|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi;
+      documentHtml = documentHtml.replace(remainingTreeRegex, () => treeHtml);
+    }
 
     return {
       facts,

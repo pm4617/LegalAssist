@@ -39,8 +39,18 @@ export class FamilyTreeService {
     let data: FamilyTreeData;
 
     if (typeof input === 'string') {
+      const trimmed = input.trim();
+      // If already rendered HTML diagram, return directly without re-parsing
+      if (
+        trimmed.startsWith('<div') ||
+        trimmed.startsWith('<table') ||
+        trimmed.includes('family-tree-table') ||
+        trimmed.includes('court-family-tree-container')
+      ) {
+        return trimmed;
+      }
       try {
-        const parsed = JSON.parse(input);
+        const parsed = JSON.parse(trimmed);
         if (parsed.branches || Array.isArray(parsed)) {
           data = Array.isArray(parsed) ? { branches: parsed } : parsed;
         } else {
@@ -71,7 +81,7 @@ export class FamilyTreeService {
       htmlParts.push(this.renderBranchHtml(branch));
     }
 
-    return `<div class="court-family-tree-container" style="margin: 12pt 0 16pt 0; text-align: center;">\n${htmlParts.join('\n')}\n</div>`;
+    return `<div class="court-family-tree-container" style="margin: 12pt 0 18pt 0; text-align: center;">\n${htmlParts.join('\n')}\n</div>`;
   }
 
   private renderBranchHtml(branch: FamilyTreeBranch): string {
@@ -81,7 +91,9 @@ export class FamilyTreeService {
     }
 
     const childrenList = (branch.children || []).map((c) => {
-      if (typeof c === 'string') return { name: c };
+      if (typeof c === 'string') {
+        return this.parseChildString(c);
+      }
       return c;
     });
 
@@ -96,7 +108,7 @@ export class FamilyTreeService {
 
     if (childrenList.length > 0) {
       const numCols = childrenList.length;
-      const colWidthPercent = Math.max(12, Math.floor(100 / numCols));
+      const colWidthPercent = Math.max(10, Math.floor(100 / numCols));
 
       branchHtml += `
   <table class="family-tree-table" align="center" border="0" cellspacing="0" cellpadding="0" style="width: 95%; max-width: 750px; margin: 0 auto; border-collapse: collapse; text-align: center; border: none;">
@@ -144,7 +156,27 @@ export class FamilyTreeService {
   }
 
   /**
+   * Parses string like "सौ. सुनिता (पत्नी)" or "B-विष्णू (अविवाहित मयत)" into FamilyTreeChild object.
+   */
+  private parseChildString(raw: string): FamilyTreeChild {
+    const s = raw.trim();
+    const match = /^(.*?)\s*\((.*?)\)$/.exec(s);
+    if (match) {
+      const name = match[1].trim();
+      const paren = match[2].trim();
+      const isStatus = paren.includes('मयत') || paren.includes('हयात') || paren.includes('नाहीत');
+      return {
+        name,
+        relation: isStatus ? undefined : paren,
+        status: isStatus ? paren : undefined,
+      };
+    }
+    return { name: s };
+  }
+
+  /**
    * Generates a structured family tree using Gemini AI from lawyer's input notes/facts.
+   * Handles complex multi-generational Marathi narrative text.
    */
   async generateWithAi(
     input: string | Record<string, any>,
@@ -155,69 +187,92 @@ export class FamilyTreeService {
 
     if (client) {
       try {
-        const prompt = `You are an expert AI Legal Drafter for Maharashtra Courts. 
-Analyze the provided lawyer's case notes, legal heirs list, or family relations narrative, and construct a complete, authentic Maharashtra Court Family Tree (वंशावृक्ष / वंशावळ) hierarchy in JSON format.
+        const prompt = `You are an expert Maharashtra Court Legal Document Drafter. Analyze the following Marathi legal narrative about a deceased person's family and heirs, then construct a complete, multi-generational Family Tree (वंशावृक्ष / वंशावळ) in strict JSON format.
 
-Output JSON Schema strictly matching:
+JSON OUTPUT SCHEMA (strict):
 {
   "title": "अर्जदार यांचा वंशावृक्ष/ वंशावळ",
   "branches": [
     {
-      "head": "A) [Root Ancestor/Deceased Name, e.g. राघो मोतीराम महाजन]",
-      "headStatus": "optional status, e.g. मयत",
+      "head": "कै. [मूळ पुरुष पूर्ण नाव]",
+      "headStatus": "मयत",
       "children": [
-        { "name": "ब्रह्मा.", "relation": "मुलगा/मुलगी/पत्नी optional", "status": "हयात/मयत optional" },
-        { "name": "B-विष्णू", "relation": "", "status": "अविवाहित मयत" },
-        { "name": "लक्ष्मीबाई.", "relation": "", "status": "" },
-        { "name": "C-काशीराम.", "relation": "", "status": "" },
-        { "name": "D-जीवराम.", "relation": "", "status": "" },
-        { "name": "E-जसूबाई", "relation": "", "status": "" }
+        { "name": "[पत्नी नाव]", "relation": "पत्नी", "status": "मयत/हयात" },
+        { "name": "कै. [पुत्र नाव]", "relation": "मुलगा", "status": "मयत" },
+        { "name": "[जिवंत पुत्र]", "relation": "मुलगा", "status": "हयात" },
+        { "name": "[मुलगी नाव]", "relation": "मुलगी", "status": "हयात" }
       ]
     },
     {
-      "head": "B-विष्णू अविवाहित मयत",
+      "head": "कै. [मयत मुलाचे नाव] यांचे वारस",
+      "headStatus": "मयत",
       "children": [
-        { "name": "ब्रह्मा." },
-        { "name": "लक्ष्मीबाई." },
-        { "name": "C-काशीराम." },
-        { "name": "D-जीवराम." },
-        { "name": "E-जसूबाई" }
-      ]
-    },
-    {
-      "head": "C-काशीराम.",
-      "children": [
-        { "name": "मधुकर." },
-        { "name": "लखीचंद." },
-        { "name": "सुमनबाई." },
-        { "name": "नर्मदाबाई." },
-        { "name": "साहूबाई" }
+        { "name": "[पत्नी]", "relation": "पत्नी", "status": "हयात" },
+        { "name": "[नातू]", "relation": "मुलगा", "status": "अल्पवयीन" }
       ]
     }
   ]
 }
 
-Rules:
-1. Extract all generations and family branches accurately from the notes (Ancestor, Sons, Daughters, Spouses, Heirs, Grandchildren).
-2. If any person is unmarried deceased ("अविवाहित मयत") or deceased ("मयत"), reflect it in their branch head or status.
-3. Use Marathi Devanagari text. Keep prefixes like A), B-, C), 1), 2) if present in notes.
-4. Return ONLY valid JSON.
+RULES (follow strictly):
+1. Branch 1 = ROOT ANCESTOR (मूळ पुरुष / मयत आजोबा/आजी) with ALL direct children (sons + daughters) + spouse.
+2. For every DECEASED son/daughter who has surviving heirs => create a SEPARATE branch for their heirs.
+3. For living sons/daughters who have children mentioned as heirs => create a branch.
+4. अविवाहित मयत (unmarried deceased) persons: headStatus = "अविवाहित मयत", children = [{name: "वारस नाहीत", status: "अविवाहित व निःसंतान मयत"}].
+5. Include ages if mentioned, using Marathi numerals (e.g. वय ३८).
+6. Use कै. prefix for ALL deceased persons in name field.
+7. Use Marathi Devanagari text throughout.
+8. Minor children (अल्पवयीन): add "अल्पवयीन" in status.
+9. Married daughters: include in root branch with married surname if known.
+10. Return ONLY valid JSON. No markdown. No explanations. No extra text.
 
-Lawyer's Notes / Family Details:
+INPUT NARRATIVE:
 ${rawText}`;
 
-        const response = await client.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: [{ text: prompt }],
-          config: {
-            maxOutputTokens: 4096,
-            responseMimeType: 'application/json',
-          },
-        });
+        const modelsToTry = [
+          'gemini-2.5-flash',
+          'gemini-2.0-flash',
+          'gemini-1.5-flash'
+        ];
 
-        const textOutput = response.text || '';
+        let textOutput = '';
+        for (const model of modelsToTry) {
+          try {
+            const response = await client.models.generateContent({
+              model,
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+              config: {
+                maxOutputTokens: 8192,
+                temperature: 0.1,
+                responseMimeType: 'application/json',
+              },
+            });
+            if (response.text && response.text.trim()) {
+              textOutput = response.text.trim();
+              break;
+            }
+          } catch (modelErr: any) {
+            console.warn(`⚠️ Gemini AI Family Tree model ${model} failed, trying next:`, modelErr?.message);
+          }
+        }
         const cleanedJson = textOutput.replace(/```json/gi, '').replace(/```/g, '').trim();
-        const treeData: FamilyTreeData = JSON.parse(cleanedJson);
+
+        let treeData: FamilyTreeData;
+        try {
+          treeData = JSON.parse(cleanedJson);
+        } catch {
+          // Try to extract JSON object from response if extra text wrapped around it
+          const jsonMatch = /\{[\s\S]*\}/.exec(cleanedJson);
+          if (jsonMatch) {
+            treeData = JSON.parse(jsonMatch[0]);
+          } else {
+            throw new Error('Invalid JSON response from AI');
+          }
+        }
+
+        if (!treeData.branches || treeData.branches.length === 0) {
+          throw new Error('Empty branches in AI response');
+        }
 
         const html = this.renderFamilyTreeHtml(treeData);
         const summary = `वंशावळ यशस्वीरित्या तयार करण्यात आली (${treeData.branches.length} शाखा).`;
@@ -231,7 +286,7 @@ ${rawText}`;
     // Fallback: Rule-based generation from facts/notes
     const fallbackTree = typeof input === 'object'
       ? this.generateFallbackFromFacts(input)
-      : this.parseTreeFromText(rawText);
+      : this.parseMarathiNarrative(rawText);
 
     const html = this.renderFamilyTreeHtml(fallbackTree);
     return {
@@ -277,19 +332,197 @@ ${rawText}`;
   }
 
   /**
-   * Parses simple text hierarchy / bulleted list into FamilyTreeData.
+   * Parses complex Marathi prose narrative about a family into FamilyTreeData.
+   * Handles multi-generational descriptions with deaths, ages, spouses, children.
+   */
+  parseMarathiNarrative(text: string): FamilyTreeData {
+    if (!text || !text.trim()) {
+      return { title: 'अर्जदार यांचा वंशावृक्ष/ वंशावळ', branches: [] };
+    }
+
+    const branches: FamilyTreeBranch[] = [];
+    const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(Boolean);
+    const fullText = paragraphs.join(' ');
+
+    // ── STEP 1: Identify root ancestor and direct children ──
+    let rootName = '';
+    let rootChildren: FamilyTreeChild[] = [];
+
+    // Find root कै. person (first mention)
+    const kaiMatch = /(?:कै\.|कै)\s+([^\s,]+(?:\s+[^\s,]+){1,4})/.exec(fullText);
+    if (kaiMatch) {
+      rootName = 'कै. ' + kaiMatch[1].trim();
+    }
+
+    // Extract spouse of root (आजी / पत्नी in first paragraph)
+    if (rootName && paragraphs[0]) {
+      const spouseMatch = /(?:आजी|पत्नी)\s+([^\s,]+(?:\s+[^\s,]+){1,3})/.exec(paragraphs[0]);
+      if (spouseMatch) {
+        const spouseName = spouseMatch[1].trim();
+        const isMayat = fullText.includes(spouseName) && /मयत/.test(fullText.substring(fullText.indexOf(spouseName), fullText.indexOf(spouseName) + 100));
+        rootChildren.push({ name: isMayat ? `कै. ${spouseName}` : spouseName, relation: 'पत्नी', status: isMayat ? 'मयत' : 'हयात' });
+      }
+    }
+
+    // Extract sons listed in root paragraph: "रमेश, वसंत, नीलेश, सुभाष ही चार मुले"
+    const sonsM = /([\u0900-\u097F]+(?:,\s*[\u0900-\u097F]+)+)\s+ही(?:\s+\w+)?\s+मुले/.exec(fullText)
+               || /मुले:\s*([\u0900-\u097F]+(?:,\s*[\u0900-\u097F]+)+)/.exec(fullText);
+    if (sonsM) {
+      const sonNames = sonsM[1].split(/,\s*/).map(s => s.trim()).filter(Boolean);
+      for (const son of sonNames) {
+        const isMayat = new RegExp(son + '[^।\n]{0,30}मयत').test(fullText);
+        rootChildren.push({
+          name: isMayat ? `कै. ${son}` : son,
+          relation: 'मुलगा',
+          status: isMayat ? 'मयत' : 'हयात',
+        });
+      }
+    }
+
+    // Extract daughters: "मीनाबाई व आशाबाई या दोन मुली"
+    const dauM = /([\u0900-\u097F]+(?:\s+व\s+[\u0900-\u097F]+|,\s*[\u0900-\u097F]+)*)\s+(?:या|ह्या)(?:\s+\w+)?\s+मुली/.exec(fullText)
+              || /मुली:\s*([\u0900-\u097F]+(?:,\s*[\u0900-\u097F]+)+)/.exec(fullText);
+    if (dauM) {
+      const dauNames = dauM[1].split(/\s+व\s+|,\s*/).map(s => s.trim()).filter(Boolean);
+      for (const dau of dauNames) {
+        rootChildren.push({ name: dau, relation: 'मुलगी', status: 'हयात' });
+      }
+    }
+
+    if (rootName && rootChildren.length > 0) {
+      branches.push({ head: rootName, headStatus: 'मयत', children: rootChildren });
+    }
+
+    // ── STEP 2: Per-paragraph heir branch extraction ──
+    const processedPersons = new Set<string>();
+    if (rootName) processedPersons.add(rootName);
+
+    for (const para of paragraphs) {
+      // Skip root ancestor paragraph
+      if (rootName && para.includes(kaiMatch![1])) continue;
+
+      // Check for अविवाहित मयत
+      const personMatch = /(?:कै\.|कै)\s+([^\s,]+(?:\s+[^\s,]+){1,4})/i.exec(para);
+      if (!personMatch) continue;
+
+      const personNameRaw = personMatch[1].trim();
+      const personName = 'कै. ' + personNameRaw;
+      if (processedPersons.has(personName)) continue;
+      processedPersons.add(personName);
+
+      const isAvivahit = /अविवाहित|निःसंतान/.test(para);
+      if (isAvivahit) {
+        branches.push({
+          head: personName,
+          headStatus: 'अविवाहित मयत',
+          children: [{ name: 'वारस नाहीत', status: 'अविवाहित व निःसंतान मयत' }],
+        });
+        continue;
+      }
+
+      const heirChildren: FamilyTreeChild[] = [];
+
+      // Wife
+      const wifeM = /पत्नी\s+([\u0900-\u097F]+(?:\s+[\u0900-\u097F]+){0,3})(?:\s+\(वय\s*([\d\u0966-\u096F]+)[^)]*\))?/.exec(para);
+      if (wifeM) {
+        const wifeName = wifeM[1].trim();
+        const wifeAge = wifeM[2] ? `वय ${wifeM[2]}` : '';
+        const afterWife = para.substring(para.indexOf(wifeName));
+        const wifeStatus = /मयत/.test(afterWife.substring(0, 60)) ? 'मयत' : 'हयात';
+        heirChildren.push({ name: wifeName, relation: 'पत्नी', status: [wifeStatus, wifeAge].filter(Boolean).join(', ') });
+      }
+
+      // Sons
+      const sonMatcher = /(?:मुलगा|पुत्र)\s+(?:कै\.\s*)?([\u0900-\u097F]+(?:\s+[\u0900-\u097F]+){0,3})(?:\s+\(वय\s*([\d\u0966-\u096F]+)[^)]*\))?/gi;
+      for (const m of para.matchAll(sonMatcher)) {
+        const sonNameRaw = m[1].trim();
+        const sonAge = m[2] ? `वय ${m[2]}` : '';
+        const pos = para.indexOf(sonNameRaw);
+        const isMayat = pos > 0 && /कै\./.test(para.substring(Math.max(0, pos - 6), pos + 2));
+        heirChildren.push({
+          name: isMayat ? `कै. ${sonNameRaw}` : sonNameRaw,
+          relation: 'मुलगा',
+          status: [isMayat ? 'मयत' : 'हयात', sonAge].filter(Boolean).join(', '),
+        });
+      }
+
+      // Daughters
+      const dauMatcher = /(?:मुलगी|कन्या)\s+([\u0900-\u097F]+(?:\s+[\u0900-\u097F]+){0,3})(?:\s+\(वय\s*([\d\u0966-\u096F]+)[^)]*\))?/gi;
+      for (const m of para.matchAll(dauMatcher)) {
+        const dauName = m[1].trim();
+        const dauAge = m[2] ? `वय ${m[2]}` : '';
+        heirChildren.push({ name: dauName, relation: 'मुलगी', status: ['हयात', dauAge].filter(Boolean).join(', ') });
+      }
+
+      if (heirChildren.length > 0) {
+        branches.push({
+          head: `${personName} यांचे वारस`,
+          headStatus: 'मयत',
+          children: heirChildren,
+        });
+      }
+    }
+
+    // If no branches at all, fall back to simple text parser
+    if (branches.length === 0) {
+      return this.parseTreeFromText(text);
+    }
+
+    return { title: 'अर्जदार यांचा वंशावृक्ष/ वंशावळ', branches };
+  }
+
+  /**
+   * Parses simple text hierarchy / bulleted list / inline text into FamilyTreeData.
    */
   parseTreeFromText(text: string): FamilyTreeData {
     if (!text || !text.trim()) {
       return { title: 'अर्जदार यांचा वंशावृक्ष/ वंशावळ', branches: [] };
     }
 
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const raw = text.trim();
+
+    // Check for inline single-sentence format:
+    // e.g. "A) धर्मेंद्र विजय महाजन (मयत) - वारसदार: सौ. सुनिता (पत्नी), राहुल (मुलगा), स्नेहल (मुलगी), सौ. शांताबाई (आई)"
+    // or "धर्मेंद्र महाजन (मयत): सुनिता (पत्नी), राहुल (मुलगा)"
+    const inlineMatch = /^(.*?)\s*(?:[-–—]\s*(?:वारसदार|वारस|मुले|मुली|अपत्ये)?\s*:|:\s*)(.*)$/i.exec(raw);
+    if (inlineMatch && !raw.includes('\n')) {
+      const head = inlineMatch[1].trim();
+      const childrenStr = inlineMatch[2].trim();
+      const rawChildren = childrenStr.split(/[,;\n]|(?:\s+व\s+)|\band\b/).map(c => c.trim()).filter(Boolean);
+      const children = rawChildren.map(c => this.parseChildString(c));
+      return {
+        title: 'अर्जदार यांचा वंशावृक्ष/ वंशावळ',
+        branches: [
+          {
+            head,
+            children: children.length > 0 ? children : [{ name: childrenStr }],
+          }
+        ],
+      };
+    }
+
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     const branches: FamilyTreeBranch[] = [];
     let currentBranch: FamilyTreeBranch | null = null;
 
     for (const line of lines) {
       if (line.includes('वंशावळ') || line.includes('वंशावृक्ष')) {
+        continue;
+      }
+
+      // Check if line is an inline branch with children: e.g. "शाखा 1: B-विष्णू - वारस: ब्रह्मा., लक्ष्मीबाई."
+      const lineInline = /^(.*?)\s*(?:[-–—]\s*(?:वारसदार|वारस|मुले|मुली|अपत्ये)?\s*:|:\s*)(.+)$/i.exec(line);
+      if (lineInline && lineInline[2].includes(',')) {
+        if (currentBranch && currentBranch.children.length > 0) {
+          branches.push(currentBranch);
+          currentBranch = null;
+        }
+        const bHead = lineInline[1].replace(/^(?:शाखा\s*\d+\s*[:\-]?\s*)/i, '').trim();
+        const bChildren = lineInline[2].split(/[,;\n]|(?:\s+व\s+)|\band\b/).map(c => c.trim()).filter(Boolean).map(c => this.parseChildString(c));
+        branches.push({
+          head: bHead,
+          children: bChildren,
+        });
         continue;
       }
 
@@ -308,7 +541,7 @@ ${rawText}`;
         // Child item
         const childName = line.replace(/^[\-\*•\d\.\)]+\s*/, '').trim();
         if (childName) {
-          currentBranch.children.push({ name: childName });
+          currentBranch.children.push(this.parseChildString(childName));
         }
       } else {
         currentBranch = {
@@ -325,7 +558,7 @@ ${rawText}`;
     if (branches.length === 0 && lines.length > 0) {
       branches.push({
         head: lines[0],
-        children: lines.slice(1).map(name => ({ name })),
+        children: lines.slice(1).map(name => this.parseChildString(name)),
       });
     }
 

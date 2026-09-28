@@ -207,6 +207,10 @@ export class TemplateService {
     let familyTreeHtml = '';
     if (cleanFacts.familyTree) {
       familyTreeHtml = familyTreeService.renderFamilyTreeHtml(cleanFacts.familyTree);
+    } else if (cleanFacts.familyTreeNotes && typeof cleanFacts.familyTreeNotes === 'string' && cleanFacts.familyTreeNotes.trim().length > 10) {
+      // Parse raw Marathi narrative notes into a tree
+      const narrativeTree = familyTreeService.parseMarathiNarrative(cleanFacts.familyTreeNotes);
+      familyTreeHtml = familyTreeService.renderFamilyTreeHtml(narrativeTree);
     } else {
       const hasDeceasedOrHeirs = !!(cleanFacts.deceasedName || cleanFacts.fatherOrHusbandName || cleanFacts.party1Name || cleanFacts.heir1Name || cleanFacts.वारस1);
       if (hasDeceasedOrHeirs) {
@@ -219,10 +223,17 @@ export class TemplateService {
       replacements.family_tree = familyTreeHtml;
       replacements.वंशावळ = familyTreeHtml;
       replacements.वंशावृक्ष = familyTreeHtml;
+
+      // Cleanly replace any enclosing paragraph containing only {familyTree} / {वंशावळ} / {वंशावृक्ष}
+      const pFamilyTreeRegex = /<p\b[^>]*>(?:<span\b[^>]*>|<font\b[^>]*>|<b>|<strong>|\s)*(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)(?:<\/span>|<\/font>|<\/b>|<\/strong>|\s)*<\/p>/gi;
+      text = text.replace(pFamilyTreeRegex, () => familyTreeHtml);
     }
 
-    // Replace any other custom facts if non-empty
+    // Replace any other custom facts if non-empty (excluding familyTree/genealogy which is formatted as diagrammatic HTML)
     for (const [key, val] of Object.entries(cleanFacts)) {
+      if (key === 'familyTree' || key === 'family_tree' || key === 'वंशावळ' || key === 'वंशावृक्ष') {
+        continue;
+      }
       if (val !== undefined && val !== null) {
         const strVal = String(val);
         if (strVal.trim().length > 0) {
@@ -244,15 +255,21 @@ export class TemplateService {
 
       // Match {key} even if separated by inner HTML tags, HTML entities (&lbrace; &#123;) or styling
       const tagRegex = new RegExp(`(?:\\{|&lbrace;|&#123;|&#x7b;)(?:\\s*<[^>]*>)*\\s*${charPattern}\\s*(?:\\s*<[^>]*>)*(?:\\}|&rbrace;|&#125;|&#x7d;)`, 'gi');
-      text = text.replace(tagRegex, val);
+      text = text.replace(tagRegex, () => val);
 
       const literalRegex = new RegExp(`\\{${escapedKey}\\}`, 'gi');
-      text = text.replace(literalRegex, val);
+      text = text.replace(literalRegex, () => val);
     }
 
     // Direct replacement of {todaysDate} variations to ensure English numbers
     text = text.replace(/\{(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\}/gi, marathiToday);
     text = text.replace(/(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:todaysDate|todayDate|todaysdate|today_date|todays_date)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi, marathiToday);
+
+    // Safeguard: If familyTreeHtml was generated, ensure any remaining {familyTree} variants are replaced
+    if (familyTreeHtml) {
+      const remainingTreeRegex = /(?:\{|&lbrace;|&#123;|&#x7b;)(?:<[^>]*>)*\s*(?:familyTree|family_tree|वंशावळ|वंशावृक्ष)\s*(?:<[^>]*>)*(?:\}|&rbrace;|&#125;|&#x7d;)/gi;
+      text = text.replace(remainingTreeRegex, () => familyTreeHtml);
+    }
 
     // 1. Remove all remaining placeholders with brackets and replace with empty spaces
     text = removePlaceholdersWithSpaces(text);

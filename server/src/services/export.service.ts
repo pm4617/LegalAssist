@@ -407,6 +407,16 @@ function extractBlocks(content: string): HtmlBlock[] {
         continue;
       }
 
+      // If this is a <div> that contains nested block-level content (tables, paragraphs),
+      // recursively extract its children as individual blocks (e.g. family tree container)
+      if (tagName === 'div' && /\<(table|p|div|h[1-6]|center|blockquote)[\s\/\>]/i.test(innerHtml)) {
+        const childBlocks = extractBlocks(innerHtml);
+        for (const cb of childBlocks) {
+          blocks.push(cb);
+        }
+        continue;
+      }
+
       let alignment = getAlignmentFromTag(openTag) || '';
       if (tagName === 'center') alignment = 'center';
       const isHeading = /^h[1-6]$/.test(tagName);
@@ -559,6 +569,15 @@ function getParagraphIndent(openTag: string, innerHtml: string): number | undefi
   return undefined;
 }
 
+function isTableBorderless(tableOpenTag: string): boolean {
+  // border="0" attribute or border: none / border: 0 in style or family-tree-table class
+  if (/\bborder=["']?0["']?/i.test(tableOpenTag)) return true;
+  if (/border:\s*none/i.test(tableOpenTag)) return true;
+  if (/border:\s*0(?:px)?/i.test(tableOpenTag)) return true;
+  if (/class=["'][^"']*family-tree/i.test(tableOpenTag)) return true;
+  return false;
+}
+
 function extractRichTableRows(
   tableHtml: string,
   defaultFont: string,
@@ -622,6 +641,10 @@ function extractRichTableRows(
 }
 
 function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSize: number): Table {
+  // Detect whether this table should have visible borders
+  const tableOpenTagMatch = /^(<table[^>]*>)/i.exec(tableHtml.trim());
+  const tableOpenTag = tableOpenTagMatch ? tableOpenTagMatch[1] : '';
+  const noBorders = isTableBorderless(tableOpenTag);
   const parsedRows = extractRichTableRows(tableHtml, defaultFont, defaultFontSize / 2);
   const rows: TableRow[] = [];
 
@@ -646,20 +669,18 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
           }))
         : [new TextRun({ text: c.plainText, font: defaultFont, size: defaultFontSize, bold: c.isHeader })];
 
-      const borderStyle = {
-        style: BorderStyle.SINGLE,
-        size: 6,
-        color: '000000',
-      };
+      const solidBorder = { style: BorderStyle.SINGLE, size: 6, color: '000000' };
+      const nilBorder   = { style: BorderStyle.NIL,    size: 0, color: 'FFFFFF' };
+      const cellBorder  = noBorders ? nilBorder : solidBorder;
 
       cells.push(new TableCell({
         columnSpan: c.colspan > 1 ? c.colspan : undefined,
         rowSpan: c.rowspan > 1 ? c.rowspan : undefined,
         verticalAlign: VerticalAlign.CENTER,
-        shading: c.isHeader ? { fill: 'E8EAF0' } : undefined,
+        shading: (!noBorders && c.isHeader) ? { fill: 'E8EAF0' } : undefined,
         borders: {
-          top: borderStyle, bottom: borderStyle,
-          left: borderStyle, right: borderStyle,
+          top: cellBorder, bottom: cellBorder,
+          left: cellBorder, right: cellBorder,
         },
         children: [
           new Paragraph({
@@ -870,6 +891,24 @@ export class ExportService {
     }
     th {
       background-color: #f2f2f2;
+      font-weight: bold;
+    }
+    /* Family tree / borderless tables */
+    .family-tree-table, table[border="0"] {
+      border: none !important;
+    }
+    .family-tree-table td, .family-tree-table th,
+    table[border="0"] td, table[border="0"] th {
+      border: none !important;
+      background: transparent !important;
+      padding: 3pt 5pt;
+    }
+    .court-family-tree-container {
+      page-break-inside: avoid;
+      text-align: center;
+    }
+    .family-tree-title {
+      text-align: center;
       font-weight: bold;
     }
   </style>
