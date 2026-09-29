@@ -726,6 +726,38 @@ export class TelegramBotService {
     return '';
   }
 
+  public buildTelegramFileBaseName(template: LegalTemplate, facts?: ClientFacts): string {
+    const titleSource = (template.titleMr || template.title || template.id || 'legal-document').trim();
+    const partyName = facts ? this.getDraftPartyName(facts, template.fields) : '';
+
+    const slugify = (value: string): string => {
+      if (!value) return '';
+      const normalized = value
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/&/g, ' and ')
+        .replace(/[^\p{L}\p{N}\s_-]+/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      return normalized
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean)
+        .join('-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    };
+
+    const titleSlug = slugify(titleSource).replace(/(?:^|-)copy(?:-\d+)?(?=-|$)/g, '');
+    const partySlug = slugify(partyName);
+
+    const parts = ['Draft', titleSlug || 'document'];
+    if (partySlug) parts.push(partySlug);
+
+    return parts.join('_').slice(0, 90);
+  }
+
   private async finishWizardAndSendFiles(chatId: number, session: TelegramSession) {
     if (!session.templateId) return;
     const template = await templateService.getTemplateAsync(session.templateId);
@@ -766,10 +798,10 @@ export class TelegramBotService {
         console.error('Failed to save Telegram draft to store:', saveErr);
       }
 
-      const safeId = (template.id || 'document').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileBase = this.buildTelegramFileBaseName(template, session.facts);
       const timestamp = Date.now().toString().slice(-6);
-      const docxFileName = `Draft_${safeId}_${timestamp}.docx`;
-      const pdfFileName = `Draft_${safeId}_${timestamp}.pdf`;
+      const docxFileName = `${fileBase}_${timestamp}.docx`;
+      const pdfFileName = `${fileBase}_${timestamp}.pdf`;
 
       // 2. Generate DOCX Buffer
       const docxBuffer = await exportService.generateDocx({

@@ -224,6 +224,8 @@ function parseParagraphToRuns(
 
       if (/^<br[\s/]?>/.test(tagLower)) {
         pendingBreak++;
+      } else if (/^<\/?(?:div|p|table|tbody|thead|tfoot|tr|td|th|center|blockquote|hr|li|ul|ol|section|article|figure)\b/i.test(tagLower)) {
+        continue;
       } else if (/^<b[\s>]|^<strong[\s>]/.test(tagLower)) {
         currentStyle = { ...currentStyle, bold: true };
         styleStack.push(currentStyle);
