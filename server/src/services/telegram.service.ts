@@ -726,7 +726,7 @@ export class TelegramBotService {
     return '';
   }
 
-  public buildTelegramFileBaseName(template: LegalTemplate, facts?: ClientFacts): string {
+  public buildTelegramFileBaseName(template: LegalTemplate, facts?: ClientFacts, draftName?: string): string {
     const titleSource = (template.titleMr || template.title || template.id || 'legal-document').trim();
     const partyName = facts ? this.getDraftPartyName(facts, template.fields) : '';
 
@@ -751,6 +751,10 @@ export class TelegramBotService {
 
     const titleSlug = slugify(titleSource).replace(/(?:^|-)copy(?:-\d+)?(?=-|$)/g, '');
     const partySlug = slugify(partyName);
+
+    if (draftName?.trim()) {
+      return slugify(draftName).slice(0, 90);
+    }
 
     const parts = ['Draft', titleSlug || 'document'];
     if (partySlug) parts.push(partySlug);
@@ -779,13 +783,14 @@ export class TelegramBotService {
     await this.sendMessage(chatId, `⚙️ <b>मसुदा तयार झाला आहे!</b>\n📄 <i>Word (.docx) आणि PDF (.pdf) फाइल्स तयार केल्या जात आहेत...</i>`);
 
     try {
+      const partyName = this.getDraftPartyName(session.facts, template.fields);
+      const draftName = `Telegram: ${template.title}${partyName ? ` (${partyName})` : ''}`;
+
       // 1. Save generated draft into server-side DraftStore so it appears in Document Drafts in Web UI
       try {
-        const partyName = this.getDraftPartyName(session.facts, template.fields);
-        const partySuffix = partyName ? ` (${partyName})` : '';
         draftStore.saveDraft({
           id: `telegram_${chatId}_${Date.now()}`,
-          name: `Telegram: ${template.title}${partySuffix}`,
+          name: draftName,
           templateId: template.id,
           facts: session.facts,
           documentBody: mergedHtml,
@@ -798,7 +803,7 @@ export class TelegramBotService {
         console.error('Failed to save Telegram draft to store:', saveErr);
       }
 
-      const fileBase = this.buildTelegramFileBaseName(template, session.facts);
+      const fileBase = this.buildTelegramFileBaseName(template, session.facts, draftName);
       const timestamp = Date.now().toString().slice(-6);
       const docxFileName = `${fileBase}_${timestamp}.docx`;
       const pdfFileName = `${fileBase}_${timestamp}.pdf`;

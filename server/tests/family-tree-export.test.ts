@@ -59,7 +59,13 @@ test('telegram file names use selected template title instead of template id', (
   } as any;
 
   const base = bot.buildTelegramFileBaseName(template, { party1Name: 'लकीचंद काशीराम महाजन' } as any);
+  const baseFromDraftName = bot.buildTelegramFileBaseName(
+    template,
+    { party1Name: 'लकीचंद काशीराम महाजन' } as any,
+    'Telegram: वारस दाखला अर्ज (लकीचंद काशीराम महाजन)'
+  );
 
   assert.match(base, /वारस|dakhla|varas|draft/i);
   assert.doesNotMatch(base, /name-change-affidavit/i);
+  assert.equal(baseFromDraftName, 'telegram-वारस-दाखला-अर्ज-लकीचंद-काशीराम-महाजन');
 });
