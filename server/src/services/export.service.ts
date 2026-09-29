@@ -164,6 +164,7 @@ export interface ParsedTableCell {
   isHeader: boolean;
   colspan: number;
   rowspan: number;
+  hasTopBorder: boolean;
   align: 'left' | 'center' | 'right' | 'justify';
   cellInner: string;
   plainText: string;
@@ -172,6 +173,30 @@ export interface ParsedTableCell {
 
 export interface ParsedTableRow {
   cells: ParsedTableCell[];
+  minHeightPt?: number;
+}
+
+function mergeEquivalentRuns(runs: ParsedRun[]): ParsedRun[] {
+  const merged: ParsedRun[] = [];
+
+  for (const run of runs) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous &&
+      !previous.break &&
+      !run.break &&
+      previous.bold === run.bold &&
+      previous.italic === run.italic &&
+      previous.underline === run.underline &&
+      previous.fontSize === run.fontSize
+    ) {
+      previous.text += run.text;
+    } else {
+      merged.push({ ...run });
+    }
+  }
+
+  return merged;
 }
 
 function parseParagraphToRuns(
@@ -584,11 +609,23 @@ function extractRichTableRows(
   defaultFontSizePt: number
 ): ParsedTableRow[] {
   const rows: ParsedTableRow[] = [];
-  const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const trRe = /<tr([^>]*)>([\s\S]*?)<\/tr>/gi;
   let trMatch: RegExpExecArray | null;
 
   while ((trMatch = trRe.exec(tableHtml)) !== null) {
-    const trInner = trMatch[1] || '';
+    const trAttrs = trMatch[1] || '';
+    const trInner = trMatch[2] || '';
+    const rowHeightMatch = /height\s*:\s*([\d.]+)(pt|px|in|cm)?/i.exec(trAttrs);
+    let minHeightPt: number | undefined;
+    if (rowHeightMatch) {
+      const value = parseFloat(rowHeightMatch[1]);
+      const unit = (rowHeightMatch[2] || 'pt').toLowerCase();
+      if (Number.isFinite(value) && value > 0) {
+        minHeightPt = unit === 'px' ? value * 0.75 :
+          unit === 'in' ? value * 72 :
+          unit === 'cm' ? value * 28.35 : value;
+      }
+    }
     const cells: ParsedTableCell[] = [];
     const cellRe = /<(th|td)([^>]*)>([\s\S]*?)<\/\1>/gi;
     let cellMatch: RegExpExecArray | null;
@@ -603,6 +640,9 @@ function extractRichTableRows(
 
       const rowspanMatch = /rowspan=["']?(\d+)["']?/i.exec(cellAttrs);
       const rowspan = rowspanMatch ? parseInt(rowspanMatch[1], 10) : 1;
+      const cellStyleMatch = /style=["']([^"']*)["']/i.exec(cellAttrs);
+      const topBorderMatch = cellStyleMatch && /border-top\s*:\s*([^;]+)/i.exec(cellStyleMatch[1]);
+      const hasTopBorder = !!topBorderMatch && !/^(?:none|0(?:px|pt)?)\s*$/i.test(topBorderMatch[1].trim());
 
       const cellAlignRaw = getAlignmentFromTag(`<td${cellAttrs}>`);
       const align: 'left' | 'center' | 'right' | 'justify' =
@@ -625,6 +665,7 @@ function extractRichTableRows(
         isHeader,
         colspan,
         rowspan,
+        hasTopBorder,
         align,
         cellInner,
         plainText,
@@ -633,7 +674,7 @@ function extractRichTableRows(
     }
 
     if (cells.length > 0) {
-      rows.push({ cells });
+      rows.push({ cells, minHeightPt });
     }
   }
 
@@ -1118,6 +1159,8 @@ export class ExportService {
           }
 
           if (block.isTable && block.tableHtml) {
+            const tableOpenTagMatch = /^(<table[^>]*>)/i.exec(block.tableHtml.trim());
+            const noBorders = isTableBorderless(tableOpenTagMatch ? tableOpenTagMatch[1] : '');
             const parsedRows = extractRichTableRows(block.tableHtml, defaultFont, defaultFontSizePt);
             if (parsedRows.length > 0) {
               const numCols = Math.max(...parsedRows.map(r => r.cells.length), 1);
@@ -1149,18 +1192,19 @@ export class ExportService {
               for (let r = 0; r < parsedRows.length; r++) {
                 const pRow = parsedRows[r];
                 const isHeader = r === 0 || pRow.cells.some(c => c.isHeader);
-                let maxHeight = 22;
+                const isConnectorRow = noBorders && pRow.cells.every(cell => cell.plainText.includes('↓'));
+                let maxHeight = pRow.minHeightPt || 0;
 
                 // Compute row height based on cell text wraps
                 for (let c = 0; c < pRow.cells.length; c++) {
                   const cell = pRow.cells[c];
                   const colW = colWidths[c] || (usableWidth / numCols);
-                  const cellText = cell.plainText || cell.runs.map(run => run.text).join(' ');
+                  const cellText = cell.runs.map(run => `${'\n'.repeat(run.break || 0)}${run.text}`).join('') || cell.plainText;
                   const cellFont = (isHeader || cell.runs.some(run => run.bold)) ? 'Devanagari-Bold' : 'Devanagari';
                   if (fontRegistered) doc.font(cellFont);
                   doc.fontSize(isHeader ? 10.5 : 10);
                   const textHeight = doc.heightOfString(cellText, { width: colW - 8 });
-                  if (textHeight + 10 > maxHeight) maxHeight = Math.round(textHeight + 10);
+                  maxHeight = Math.max(maxHeight, Math.ceil(textHeight + (isConnectorRow ? 2 : 14)));
                 }
 
                 if (doc.y + maxHeight > (isLegal ? 930 : 760)) {
@@ -1171,7 +1215,7 @@ export class ExportService {
                 const startY = doc.y;
 
                 // Render header background shading matching Word E8EAF0
-                if (isHeader) {
+                if (isHeader && !noBorders) {
                   doc.rect(leftMargin, startY, usableWidth, maxHeight).fill('#E8EAF0');
                 }
 
@@ -1180,7 +1224,7 @@ export class ExportService {
                 for (let c = 0; c < pRow.cells.length; c++) {
                   const cell = pRow.cells[c];
                   const colW = colWidths[c] || (usableWidth / numCols);
-                  const cellAlign = cell.align || (isHeader || c === 0 || (numCols === 4 && c === 2) ? 'center' : 'left');
+                  const cellAlign = cell.align || (noBorders || isHeader || c === 0 || (numCols === 4 && c === 2) ? 'center' : 'left');
 
                   doc.fillColor('#000000');
                   const cellRuns = cell.runs.filter(cr => (cr.text && cr.text.length > 0) || (cr.break && cr.break > 0));
@@ -1201,7 +1245,7 @@ export class ExportService {
                       }
 
                       if (isFirst) {
-                        doc.text(runText, currentX + 4, startY + 5, {
+                        doc.text(runText, currentX + 4, startY + (isConnectorRow ? 1 : 5), {
                           width: colW - 8,
                           align: cellAlign,
                           underline: !!crun.underline,
@@ -1219,7 +1263,7 @@ export class ExportService {
                       ? (isHeader ? 'Devanagari-Bold' : 'Devanagari')
                       : (isHeader ? 'Helvetica-Bold' : 'Helvetica');
                     doc.font(cfont).fontSize(isHeader ? 10.5 : 10);
-                    doc.text(cell.plainText, currentX + 4, startY + 5, {
+                    doc.text(cell.plainText, currentX + 4, startY + (isConnectorRow ? 1 : 5), {
                       width: colW - 8,
                       align: cellAlign,
                       lineBreak: true
@@ -1228,14 +1272,26 @@ export class ExportService {
                   currentX += colW;
                 }
 
-                // Render table row outer boundary
-                doc.rect(leftMargin, startY, usableWidth, maxHeight).strokeColor('#888888').stroke();
+                if (noBorders) {
+                  let borderX = leftMargin;
+                  for (let c = 0; c < pRow.cells.length; c++) {
+                    const cell = pRow.cells[c];
+                    const colW = colWidths[c] || (usableWidth / numCols);
+                    if (cell.hasTopBorder) {
+                      doc.moveTo(borderX, startY).lineTo(borderX + colW, startY).lineWidth(1).strokeColor('#444444').stroke();
+                    }
+                    borderX += colW;
+                  }
+                } else {
+                  // Render table row outer boundary
+                  doc.rect(leftMargin, startY, usableWidth, maxHeight).strokeColor('#888888').stroke();
 
-                // Draw vertical grid lines between columns
-                let gridX = leftMargin;
-                for (let c = 0; c < pRow.cells.length - 1; c++) {
-                  gridX += colWidths[c] || (usableWidth / numCols);
-                  doc.moveTo(gridX, startY).lineTo(gridX, startY + maxHeight).strokeColor('#bbbbbb').stroke();
+                  // Draw vertical grid lines between columns
+                  let gridX = leftMargin;
+                  for (let c = 0; c < pRow.cells.length - 1; c++) {
+                    gridX += colWidths[c] || (usableWidth / numCols);
+                    doc.moveTo(gridX, startY).lineTo(gridX, startY + maxHeight).strokeColor('#bbbbbb').stroke();
+                  }
                 }
 
                 doc.y = startY + maxHeight;
@@ -1303,7 +1359,7 @@ export class ExportService {
             doc.y += Math.min(beforePt, 20);
           }
 
-          const runs = parseParagraphToRuns(block.html, defaultFont, defaultFontSizePt);
+          const runs = mergeEquivalentRuns(parseParagraphToRuns(block.html, defaultFont, defaultFontSizePt));
           const filteredRuns = runs.filter(r => (r.text && r.text.length > 0) || (r.break && r.break > 0));
 
           if (filteredRuns.length === 0) {

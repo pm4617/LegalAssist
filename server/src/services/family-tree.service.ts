@@ -230,9 +230,10 @@ INPUT NARRATIVE:
 ${rawText}`;
 
         const modelsToTry = [
-          'gemini-2.5-flash',
-          'gemini-2.0-flash',
-          'gemini-1.5-flash'
+          'gemini-3.8-flash',
+          'gemini-3.7-flash',
+          'gemini-3.6-flash',
+          'gemini-3.1-flash-lite',
         ];
 
         let textOutput = '';
@@ -335,10 +336,106 @@ ${rawText}`;
    * Parses complex Marathi prose narrative about a family into FamilyTreeData.
    * Handles multi-generational descriptions with deaths, ages, spouses, children.
    */
+  private parseSectionedNarrative(text: string): FamilyTreeData | null {
+    if (!/^\s*शाखा\s*\d+\s*[:：]/m.test(text)) return null;
+
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const branches: FamilyTreeBranch[] = [];
+    let root: FamilyTreeBranch | null = null;
+    let currentBranch: FamilyTreeBranch | null = null;
+    let targetBranch: FamilyTreeBranch | null = null;
+
+    const parseHead = (value: string): { name: string; status?: string } => {
+      let name = value.trim();
+      let status: string | undefined;
+      const annotation = /\s*\(([^()]*)\)\s*$/.exec(name);
+      if (annotation) {
+        if (/अविवाहित|निःसंतान/.test(annotation[1])) status = 'अविवाहित मयत';
+        else if (/मयत/.test(annotation[1])) status = 'मयत';
+        name = name.slice(0, annotation.index).trim();
+      }
+      const statusSuffix = /\s+(अविवाहित\s+मयत|निःसंतान\s+मयत|मयत)\s*$/.exec(name);
+      if (statusSuffix) {
+        status = /अविवाहित|निःसंतान/.test(statusSuffix[1]) ? 'अविवाहित मयत' : 'मयत';
+        name = name.slice(0, statusSuffix.index).trim();
+      }
+      return { name, status };
+    };
+
+    const parseChild = (value: string): FamilyTreeChild | null => {
+      const raw = value.trim().replace(/^[•*\-]\s*/, '').trim();
+      if (!raw || /^(?:मुले|मुली)\s*[-:]\s*(?:नाहीत|नाही)/.test(raw)) return null;
+      const spouse = /^(पती|पत्नी)\s*[-:]\s*(.+)$/.exec(raw);
+      if (spouse) return { name: spouse[2].trim().replace(/[.।]+$/, ''), relation: spouse[1] };
+
+      const child = this.parseChildString(raw);
+      child.name = child.name.replace(/[.।]+$/, '');
+      return child;
+    };
+
+    const addChildren = (branch: FamilyTreeBranch, raw: string) => {
+      for (const part of raw.split(/[,;]|\s+व\s+/)) {
+        const child = parseChild(part);
+        if (child) branch.children.push(child);
+      }
+    };
+
+    for (const line of lines) {
+      const section = /^शाखा\s*\d+\s*[:：]\s*(.*)$/i.exec(line);
+      if (section) {
+        const parsedHead = parseHead(section[1]);
+        if (!parsedHead.name) continue;
+        currentBranch = {
+          head: parsedHead.name,
+          headStatus: parsedHead.status,
+          children: [],
+        };
+        branches.push(currentBranch);
+        targetBranch = currentBranch;
+        continue;
+      }
+
+      const heirs = /^वारसदार\s*[:：]\s*(.*)$/i.exec(line);
+      if (heirs && targetBranch) {
+        addChildren(targetBranch, heirs[1]);
+        continue;
+      }
+
+      if (/^(?:वंशावळ|वंशावृक्ष|मुले\s+व\s+मुली|मुले|मुली)\s*[:：]?\s*$/.test(line)) {
+        continue;
+      }
+
+      if (!root) {
+        const parsedRoot = parseHead(line);
+        root = {
+          head: parsedRoot.name,
+          headStatus: parsedRoot.status,
+          children: [],
+        };
+        branches.unshift(root);
+        targetBranch = root;
+        continue;
+      }
+
+      if (!targetBranch) continue;
+      const child = parseChild(line);
+      if (child) targetBranch.children.push(child);
+    }
+
+    if (currentBranch?.headStatus === 'अविवाहित मयत' && currentBranch.children.length === 0) {
+      currentBranch.children.push({ name: 'वारस नाहीत', status: 'अविवाहित व निःसंतान मयत' });
+    }
+
+    return root ? { title: 'अर्जदार यांचा वंशावृक्ष/ वंशावळ', branches } : null;
+  }
+
   parseMarathiNarrative(text: string): FamilyTreeData {
     if (!text || !text.trim()) {
       return { title: 'अर्जदार यांचा वंशावृक्ष/ वंशावळ', branches: [] };
     }
+
+    const sectionedTree = this.parseSectionedNarrative(text);
+    if (sectionedTree) return sectionedTree;
 
     const branches: FamilyTreeBranch[] = [];
     const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(Boolean);
