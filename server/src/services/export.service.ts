@@ -957,7 +957,7 @@ export class ExportService {
   </style>
 </head>
 <body>
-  ${options.content || ''}
+  ${unescapeHtml(options.content || '')}
 </body>
 </html>`;
 
@@ -1054,7 +1054,7 @@ export class ExportService {
         doc.on('end', () => resolve(Buffer.concat(chunks)));
         doc.on('error', (err: Error) => reject(err));
 
-        const contentStr = (options.content || '').trim();
+        const contentStr = unescapeHtml(options.content || '').trim();
         const hasHtmlTags = /<(p|div|hr|h[1-6]|center|blockquote|table|b|strong|i|em|u|span)[\s/>]/i.test(contentStr) || isPageBreakString(contentStr);
 
         // Path A: Plain Text Document with Newlines (Standard Court Drafts)
