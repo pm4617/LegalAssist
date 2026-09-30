@@ -224,6 +224,8 @@ function parseParagraphToRuns(
 
       if (/^<br[\s/]?>/.test(tagLower)) {
         pendingBreak++;
+      } else if (/^<div[\s>]/i.test(tagLower)) {
+        pendingBreak++;
       } else if (/^<\/?(?:div|p|table|tbody|thead|tfoot|tr|td|th|center|blockquote|hr|li|ul|ol|section|article|figure)\b/i.test(tagLower)) {
         continue;
       } else if (/^<b[\s>]|^<strong[\s>]/.test(tagLower)) {
@@ -1182,7 +1184,6 @@ export class ExportService {
             doc.fontSize(11.5).text(trimmed, {
               width: usableWidth,
               align: 'justify',
-              indent: 20,
               lineGap: 4
             });
             doc.x = leftMargin;
@@ -1241,14 +1242,14 @@ export class ExportService {
               for (let r = 0; r < parsedRows.length; r++) {
                 const pRow = parsedRows[r];
                 const isHeader = r === 0 || pRow.cells.some(c => c.isHeader);
-                const isConnectorRow = noBorders && pRow.cells.every(cell => cell.plainText.includes('↓'));
+                const isConnectorRow = noBorders && pRow.cells.every(cell => /^(?:↓|v)\s*$/.test(cell.plainText));
                 let maxHeight = pRow.minHeightPt || 0;
 
                 // Compute row height based on cell text wraps
                 for (let c = 0; c < pRow.cells.length; c++) {
                   const cell = pRow.cells[c];
                   const colW = colWidths[c] || (usableWidth / numCols);
-                  const cellText = cell.runs.map(run => `${'\n'.repeat(run.break || 0)}${run.text}`).join('') || cell.plainText;
+                  const cellText = cell.runs.map(run => `${'\n'.repeat(run.break || 0)}${run.text.replace(/\s+/g, ' ')}`).join('') || cell.plainText;
                   const cellFont = (isHeader || cell.runs.some(run => run.bold)) ? 'Devanagari-Bold' : 'Devanagari';
                   if (fontRegistered) doc.font(cellFont);
                   doc.fontSize(isHeader ? 10.5 : 10);
@@ -1288,7 +1289,7 @@ export class ExportService {
                         : ((isHeader || crun.bold) ? 'Helvetica-Bold' : 'Helvetica');
                       doc.font(cfont).fontSize(isHeader ? 10.5 : 10);
 
-                      let runText = crun.text;
+                      let runText = crun.text.replace(/\s+/g, ' ');
                       if (crun.break && crun.break > 0) {
                         runText = '\n'.repeat(crun.break) + runText;
                       }
@@ -1396,7 +1397,7 @@ export class ExportService {
           } else if (align === 'center' || align === 'right' || block.isHeading) {
             indentPt = 0;
           } else {
-            indentPt = 20; // Standard court paragraph indent
+            indentPt = 0;
           }
 
           if (doc.y > (isLegal ? 930 : 760)) {
@@ -1435,7 +1436,7 @@ export class ExportService {
 
             doc.font(fontName).fontSize(runFontSize).fillColor('#000000');
 
-            let runText = run.text;
+            let runText = run.text.replace(/\s+/g, ' ');
             if (run.break && run.break > 0) {
               runText = '\n'.repeat(run.break) + runText;
             }

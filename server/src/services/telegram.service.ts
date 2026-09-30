@@ -812,7 +812,8 @@ export class TelegramBotService {
       const docxBuffer = await exportService.generateDocx({
         title: template.titleMr || template.title,
         content: mergedHtml,
-        paperSize: 'legal'
+        isDevanagari: true,
+        paperSize: 'a4'
       });
 
       // 3. Upload DOCX to Telegram Chat
@@ -820,7 +821,7 @@ export class TelegramBotService {
         chatId,
         docxBuffer,
         docxFileName,
-        `📄 <b>Word Document (.docx)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.titleMr || template.title)}\n• <b>पद्धत:</b> ${escapeHtml(modeLabel)}\n• <b>कागद आकार:</b> Legal (8.5" x 14")`,
+        `📄 <b>Word Document (.docx)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.titleMr || template.title)}\n• <b>पद्धत:</b> ${escapeHtml(modeLabel)}\n• <b>कागद आकार:</b> A4 (21 x 29.7 cm)`,
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       );
 
@@ -832,7 +833,7 @@ export class TelegramBotService {
         const pdfBuffer = await exportService.generatePdf({
           title: template.titleMr || template.title,
           content: mergedHtml,
-          paperSize: 'legal',
+          paperSize: 'a4',
           engine: 'node'
         });
 
@@ -845,7 +846,7 @@ export class TelegramBotService {
           chatId,
           pdfBuffer,
           pdfFileName,
-          `📕 <b>Court Ready PDF (.pdf)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.titleMr || template.title)}\n• <b>कागद आकार:</b> Legal (Court Standard Margins)`,
+          `📕 <b>Court Ready PDF (.pdf)</b>\n\n• <b>मसुदा:</b> ${escapeHtml(template.titleMr || template.title)}\n• <b>कागद आकार:</b> A4 (Court Standard Margins)`,
           'application/pdf'
         );
         pdfSent = true;
