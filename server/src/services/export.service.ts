@@ -390,8 +390,52 @@ function isPageBreakString(str: string): boolean {
   );
 }
 
+function normalizeNestedFamilyTreeDivs(html: string): string {
+  const containerRe = /<div\b[^>]*class=["'][^"']*\bcourt-family-tree-container\b[^"']*["'][^>]*>/gi;
+  let result = '';
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = containerRe.exec(html)) !== null) {
+    const openEnd = match.index + match[0].length;
+    let depth = 1;
+    let scan = openEnd;
+    let closeStart = -1;
+    let closeEnd = -1;
+
+    while (depth > 0) {
+      const nextOpen = /<div\b[^>]*>/i.exec(html.slice(scan));
+      const nextClose = /<\/div\s*>/i.exec(html.slice(scan));
+      if (!nextClose) break;
+
+      const openIndex = nextOpen ? scan + nextOpen.index : Number.POSITIVE_INFINITY;
+      const closeIndex = scan + nextClose.index;
+      if (openIndex < closeIndex) {
+        depth++;
+        scan = openIndex + nextOpen![0].length;
+      } else {
+        depth--;
+        closeStart = closeIndex;
+        closeEnd = closeIndex + nextClose[0].length;
+        scan = closeEnd;
+      }
+    }
+
+    if (depth !== 0 || closeStart < 0) continue;
+
+    const inner = html.slice(openEnd, closeStart)
+      .replace(/<div\b/gi, '<section')
+      .replace(/<\/div\s*>/gi, '</section>');
+    result += html.slice(cursor, openEnd) + inner + html.slice(closeStart, closeEnd);
+    cursor = closeEnd;
+    containerRe.lastIndex = closeEnd;
+  }
+
+  return result ? result + html.slice(cursor) : html;
+}
+
 function extractBlocks(content: string): HtmlBlock[] {
-  const html = (content || '').trim();
+  const html = normalizeNestedFamilyTreeDivs((content || '').trim());
   if (!html) return [];
 
   const hasBlockTags = /<(p|div|hr|h[1-6]|center|blockquote|table)[\s/>]/i.test(html) || isPageBreakString(html);
@@ -715,6 +759,7 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
       const solidBorder = { style: BorderStyle.SINGLE, size: 6, color: '000000' };
       const nilBorder   = { style: BorderStyle.NIL,    size: 0, color: 'FFFFFF' };
       const cellBorder  = noBorders ? nilBorder : solidBorder;
+      const topBorder = noBorders && c.hasTopBorder ? solidBorder : cellBorder;
 
       cells.push(new TableCell({
         columnSpan: c.colspan > 1 ? c.colspan : undefined,
@@ -722,7 +767,7 @@ function parseTableToDocx(tableHtml: string, defaultFont: string, defaultFontSiz
         verticalAlign: VerticalAlign.CENTER,
         shading: (!noBorders && c.isHeader) ? { fill: 'E8EAF0' } : undefined,
         borders: {
-          top: cellBorder, bottom: cellBorder,
+          top: topBorder, bottom: cellBorder,
           left: cellBorder, right: cellBorder,
         },
         children: [
@@ -1054,7 +1099,9 @@ export class ExportService {
         doc.on('end', () => resolve(Buffer.concat(chunks)));
         doc.on('error', (err: Error) => reject(err));
 
-        const contentStr = unescapeHtml(options.content || '').trim();
+        const contentStr = unescapeHtml(options.content || '')
+          .replace(/[↓↑←→]/g, 'v')
+          .trim();
         const hasHtmlTags = /<(p|div|hr|h[1-6]|center|blockquote|table|b|strong|i|em|u|span)[\s/>]/i.test(contentStr) || isPageBreakString(contentStr);
 
         // Path A: Plain Text Document with Newlines (Standard Court Drafts)
